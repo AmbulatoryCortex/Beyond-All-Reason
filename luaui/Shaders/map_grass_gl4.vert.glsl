@@ -45,6 +45,7 @@ uniform sampler2D mapGrassColorModTex;
 uniform sampler2D grassWindPerturbTex;
 uniform sampler2DShadow shadowTex;
 uniform sampler2D losTex;
+//__LOSGRADEDEFS__
 uniform sampler2D heightmapTex;
 
 #if UNITBENDENABLED == 1
@@ -112,9 +113,16 @@ void main() {
   grassVertWorldPos.y = (vertexPos.y + 0.5) * bladeScale + groundHeight;
 
   //--- LOS tex
-  vec4 losTexSample = texture(losTex, vec2(grassVertWorldPos.x / mapSize.z, grassVertWorldPos.z / mapSize.w)); // lostex is PO2
-  instanceParamsVS.z = dot(losTexSample.rgb,vec3(0.33));
-  instanceParamsVS.z = clamp(instanceParamsVS.z*1.5 , 0.0,1.0);
+  vec2 losUV = vec2(grassVertWorldPos.x / mapSize.z, grassVertWorldPos.z / mapSize.w); // lostex is PO2
+  vec4 losFactors;
+  if (LosGradeAvailable(losUV, losFactors)) {
+    // engine LOS grade; 0.9 keeps the in-LOS brightness of the legacy curve (0.6 * 1.5)
+    instanceParamsVS.z = 0.9 * LosGradeScalar(losFactors, grassVertWorldPos.xz);
+  } else {
+    vec4 losTexSample = texture(losTex, losUV);
+    instanceParamsVS.z = dot(losTexSample.rgb,vec3(0.33));
+    instanceParamsVS.z = clamp(instanceParamsVS.z*1.5 , 0.0,1.0);
+  }
   //debuginfo = losTexSample;
 
   //--- SHADOWS ---

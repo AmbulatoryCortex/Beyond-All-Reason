@@ -16,6 +16,7 @@ uniform sampler2D lavaNormalHeight;
 uniform sampler2D lavaDistortion;
 uniform sampler2DShadow shadowTex;
 uniform sampler2D infoTex;
+//__LOSGRADEDEFS__
 
 in DataVS {
 	vec4 worldPos;
@@ -79,8 +80,14 @@ void main() {
 
 	// Sample LOS texture for LOS, and scale it into a sane range
 	vec2 losUV = clamp(worldPos.xz, vec2(0.0), mapSize.xy ) / mapSize.zw;
-	float losTexSample = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
-	losTexSample = clamp(losTexSample * 4.0 - 1.0, LOSDARKNESS, 1.0);
+	float losTexSample;
+	vec4 losFactors;
+	if (LosGradeAvailable(losUV, losFactors)) {
+		losTexSample = LosGradeScalar(losFactors, worldPos.xz); // engine LOS grade (luminance)
+	} else {
+		losTexSample = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
+		losTexSample = clamp(losTexSample * 4.0 - 1.0, LOSDARKNESS, 1.0);
+	}
 	if (inboundsness < 0.0) losTexSample = 1.0;
 
 	// We shift the distortion texture camera-upwards according to the uniforms that got passed in

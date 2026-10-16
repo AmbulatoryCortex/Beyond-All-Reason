@@ -520,6 +520,7 @@ elseif not BAR.Utilities.Gametype.IsScavengers() then -- UNSYNCED
 	uniform sampler2D heightmapTex;
 	uniform sampler2D mapnormalsTex;
 	uniform sampler2D infoTex;
+	//__LOSGRADEDEFS__
 	uniform sampler2DShadow shadowTex;
 	uniform sampler2D colorheight;
 	uniform sampler2D normalspec;
@@ -573,8 +574,14 @@ elseif not BAR.Utilities.Gametype.IsScavengers() then -- UNSYNCED
 		float shadow = clamp(textureProj(shadowTex, shadowMapUVAtWorldPos(v_worldUV.xyz)), SHADOWSTRENGTH, 1.0);
 
 		vec2 losUV = clamp(v_worldUV.xz, vec2(0.0), mapSize.xy ) / mapSize.zw;
-		float loslevel = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
-		loslevel = clamp(loslevel * 4.0 - 1.0, LOSDARKNESS, 1.0);
+		float loslevel;
+		vec4 losFactors;
+		if (LosGradeAvailable(losUV, losFactors)) {
+			loslevel = LosGradeScalar(losFactors, v_worldUV.xz); // engine LOS grade (luminance)
+		} else {
+			loslevel = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
+			loslevel = clamp(loslevel * 4.0 - 1.0, LOSDARKNESS, 1.0);
+		}
 
 		// this is the actually correct way of blending according to
 		// Whiteout blending https://blog.selfshadow.com/publications/blending-in-detail/
@@ -628,6 +635,7 @@ elseif not BAR.Utilities.Gametype.IsScavengers() then -- UNSYNCED
 		local engineUniformBufferDefs = LuaShader.GetEngineUniformBufferDefs()
 		vsSrc = vsSrc:gsub("//__ENGINEUNIFORMBUFFERDEFS__", engineUniformBufferDefs)
 		fsSrc = fsSrc:gsub("//__ENGINEUNIFORMBUFFERDEFS__", engineUniformBufferDefs)
+		fsSrc = LuaShader.InsertLosGradeDefs(fsSrc)
 		scumShader = LuaShader({
 			vertex = vsSrc:gsub("//__DEFINES__", LuaShader.CreateShaderDefinesString(shaderConfig)),
 			fragment = fsSrc:gsub("//__DEFINES__", LuaShader.CreateShaderDefinesString(shaderConfig)),
@@ -635,6 +643,7 @@ elseif not BAR.Utilities.Gametype.IsScavengers() then -- UNSYNCED
 				heightmapTex = 0,
 				mapnormalsTex = 1,
 				infoTex = 2,
+				losGradeTex = 7,
 				shadowTex = 3,
 				colorheight = 4,
 				normalspec = 5,
@@ -962,6 +971,7 @@ elseif not BAR.Utilities.Gametype.IsScavengers() then -- UNSYNCED
 			glTexture(5, textures[textureresolution].texnormalspec)
 			glTexture(6, textures[textureresolution].texdistortion) -- Texture file
 			scumShader:Activate()
+			LuaShader.BindLosGrade(scumShader, 7)
 			scumShader:SetUniform("nightFactor", nightFactor[1], nightFactor[2], nightFactor[3], nightFactor[4])
 
 			if usestencil then

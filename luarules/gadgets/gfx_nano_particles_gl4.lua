@@ -1370,6 +1370,7 @@ local fsSrcCube = [[
 //__ENGINEUNIFORMBUFFERDEFS__
 
 uniform sampler2D infoTex;
+//__LOSGRADEDEFS__
 uniform float losAlwaysVisible;
 uniform float cubeShowInside;   // 0 = flat shading, 1 = view-dependent 3D look
 uniform float cubeNoise;        // 0 = no noise, 1 = full ±noise brightness modulation
@@ -1428,8 +1429,14 @@ void main() {
 	float losMul = 1.0;
 	if (losAlwaysVisible < 0.5) {
 		vec2 losUV = clamp(g_worldPos.xz, vec2(0.0), mapSize.xy) / mapSize.zw;
-		float los = dot(vec3(0.3333), texture(infoTex, losUV).rgb);
-		losMul = smoothstep(0.30, 0.50, los);
+		vec4 losFactors;
+		if (LosGradeAvailable(losUV, losFactors)) {
+			// engine LOS codes: only ground LOS shows enemy nanos (as before)
+			losMul = LosGradeGroundVisibility(losFactors);
+		} else {
+			float los = dot(vec3(0.3333), texture(infoTex, losUV).rgb);
+			losMul = smoothstep(0.30, 0.50, los);
+		}
 		if (losMul < 0.02) discard;
 	}
 
@@ -1534,7 +1541,7 @@ local function initGL4()
 		fsSrc = fsSrcCube,
 		gsSrc = gsSrcCube,
 		shaderName = "NanoParticlesGL4_Shape",
-		uniformInt = { infoTex = 1, u_shape = U.SHAPE_ID },
+		uniformInt = { infoTex = 1, losGradeTex = 2, u_shape = U.SHAPE_ID },
 		uniformFloat = {
 			losAlwaysVisible = 0,
 			drawRadius = U.DRAW_RADIUS,
@@ -1560,7 +1567,7 @@ local function initGL4()
 		vssrcpath = "LuaUI/Shaders/nano_particles_gl4_nogs.vert.glsl",
 		fsSrc = fsSrcCube,
 		shaderName = "NanoParticlesGL4_Shape_NoGS",
-		uniformInt = { infoTex = 1, u_shape = U.SHAPE_ID },
+		uniformInt = { infoTex = 1, losGradeTex = 2, u_shape = U.SHAPE_ID },
 		uniformFloat = shaderCacheGS.uniformFloat,
 		shaderConfig = {},
 		forceupdate = true,
@@ -6062,6 +6069,7 @@ function gadget:DrawWorld()
 	tracy.ZoneBeginN("G:NanoParticles:DrawWorld:ShaderSetup")
 	gl.Texture(1, "$info")
 	nanoShader:Activate()
+	LuaShader.BindLosGrade(nanoShader, 2)
 	-- Keep map-draw-mode state fresh per render frame so toggling metal/height/
 	-- path overlays does not spend up to 1s using stale LOS sampling state.
 	refreshInfoIsLos()

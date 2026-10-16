@@ -1205,6 +1205,7 @@ makeShaderVAO = function()
 			grassWindPerturbTex = 2, -- perlin
 			shadowTex = 3, -- perlin
 			losTex = 4, -- perlin
+			losGradeTex = 6, -- engine decoded LOS factors
 			heightmapTex = 5, -- perlin
 		},
 		uniformFloat = {
@@ -1794,6 +1795,7 @@ function widget:DrawWorldPreUnit()
 		end
 
 		grassShader:Activate()
+		LuaShader.BindLosGrade(grassShader, 6)
 		--spEcho("globalgrassfade",globalgrassfade)
 		local windStrength = mathMin(grassConfig.maxWindSpeed, mathMax(4.0, mathAbs(windDirX) + mathAbs(windDirZ)))
 		grassShader:SetUniform("grassuniforms", offsetX, offsetZ, windStrength, smoothGrassFadeExp)

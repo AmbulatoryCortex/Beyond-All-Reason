@@ -176,6 +176,7 @@ local uniformInts = {
 	heightmapTex = 0,
 	miniMapTex = 1,
 	infoTex = 2,
+	losGradeTex = 10,
 	shadowTex = 3,
 	mapNormalsTex = 4,
 	atlasColorAlpha = 5,
@@ -692,11 +693,13 @@ local function DrawDecals()
 		if decalVBO.usedElements > 0 then
 			if decalUseGeometryShader then
 				decalShader:Activate()
+				LuaShader.BindLosGrade(decalShader, 10)
 				decalShader:SetUniform("fadeDistance", disticon * 1000)
 				decalVBO.VAO:DrawArrays(GL.POINTS, decalVBO.usedElements)
 				decalShader:Deactivate()
 			else
 				decalLargeShader:Activate()
+				LuaShader.BindLosGrade(decalLargeShader, 10)
 				decalVBO.VAO:DrawElements(GL.TRIANGLES, nil, 0, decalVBO.usedElements, 0)
 				decalLargeShader:Deactivate()
 			end
@@ -705,6 +708,7 @@ local function DrawDecals()
 		if decalLargeVBO.usedElements > 0 or decalExtraLargeVBO.usedElements > 0 then
 			--spEcho("large elements:", decalLargeVBO.usedElements)
 			decalLargeShader:Activate()
+			LuaShader.BindLosGrade(decalLargeShader, 10)
 			--decalLargeShader:SetUniform("fadeDistance",disticon * 1000)
 			if decalLargeVBO.usedElements > 0 then
 				decalLargeVBO.VAO:DrawElements(GL.TRIANGLES, nil, 0, decalLargeVBO.usedElements, 0)

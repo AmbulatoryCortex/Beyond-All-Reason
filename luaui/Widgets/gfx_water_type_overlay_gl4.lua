@@ -164,6 +164,7 @@ local function compileForType(typeName)
 			lavaDistortion = 3,
 			shadowTex = 4,
 			infoTex = 5,
+			losGradeTex = 6,
 		},
 		uniformFloat = { lavaHeight = 1, heatdistortx = 1, heatdistortz = 1 },
 		shaderConfig = cfg,
@@ -384,6 +385,7 @@ function widget:DrawWorldPreUnit()
 	tideLevel = math.sin(Spring.GetGameFrame() / tidePeriod) * tideAmplitude + lavaLevel
 
 	lavaShader:Activate()
+	LuaShader.BindLosGrade(lavaShader, 6)
 	lavaShader:SetUniform("lavaHeight", tideLevel)
 	lavaShader:SetUniform("heatdistortx", heatdistortx)
 	lavaShader:SetUniform("heatdistortz", heatdistortz)

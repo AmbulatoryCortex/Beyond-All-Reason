@@ -22,6 +22,7 @@ in DataGS {
 };
 
 uniform sampler2D infoTex;
+//__LOSGRADEDEFS__
 uniform sampler2D miniMapTex;
 uniform sampler2D mapNormalsTex;
 uniform sampler2DShadow shadowTex;
@@ -185,9 +186,15 @@ void main(void)
 	
 	// Apply darkening based on LOS texture
 	vec2 losUV = clamp(g_position.xz, vec2(0.0), mapSize.xy ) / mapSize.zw;
-	float loslevel = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
-	loslevel = clamp(loslevel * 4.0 - 1.0, LOSDARKNESS, 1.0);
-	fragColor.rgb *= loslevel;
+	vec4 losFactors;
+	if (LosGradeAvailable(losUV, losFactors)) {
+		// engine LOS grade, same factors as the terrain under the decal
+		fragColor.rgb = LosGradeColor(fragColor.rgb, losFactors, g_position.xz);
+	} else {
+		float loslevel = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
+		loslevel = clamp(loslevel * 4.0 - 1.0, LOSDARKNESS, 1.0);
+		fragColor.rgb *= loslevel;
+	}
 	
 	// Blend underwater parts of the decals correctly
 	vec4 waterblendfactors = waterBlend(g_position.y);

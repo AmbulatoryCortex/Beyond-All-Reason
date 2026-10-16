@@ -20,7 +20,8 @@ end
 -- v4 On engines with Engine.FeatureSupport.losInfoTexCodes, shaders/GLSL/infoLOS.lua writes
 --    explicit level codes and the engine grades the map by luminance/saturation, so dark maps
 --    are no longer crushed. There the LOS slider is "strength" and drives the InfoTexStrength
---    springsetting (0..1.25, default 1). Older engines keep the v3 colors and opacity unchanged.
+--    springsetting (0..1.25, default 1). The v3 colors/opacity still feed the engine's
+--    legacy-compatible $info gray there. Older engines keep the v3 behaviour unchanged.
 
 local engineGrades = (Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and true or false
 
@@ -28,7 +29,12 @@ local STRENGTH_MIN, STRENGTH_MAX, STRENGTH_DEFAULT = 0, 1.25, 1
 
 local opacity = 0.66
 local strength = STRENGTH_DEFAULT
-local strengthBeforeWidget
+
+-- InfoTexStrength in effect before this widget first touched it, kept as an
+-- in-memory config overlay for the session: it survives widget/LuaUI reloads
+-- and errors that skip Shutdown (so we never save our own value as "before"),
+-- and dies with the engine process (overlays are never written to disk).
+local BEFORE_KEY = "LosColorsInfoTexStrengthBefore"
 
 local losColors = {
 	fog = { 0.40, 0.40, 0.40 },
@@ -64,13 +70,14 @@ local function clampStrength(value)
 end
 
 local function updateLOS()
+	-- The colors also feed the engine's legacy-compatible $info gray on
+	-- engines that grade from codes, so set them on every engine.
+	local colors = applyOpacity(losColors)
+	spSetLosViewColors(colors.fog, colors.los, colors.radar, colors.jam, colors.radar2)
 	if engineGrades then
 		-- The engine reads InfoTexStrength every frame, so no refresh is needed.
 		-- In-memory overlay only: the widget config owns the value.
 		Spring.SetConfigFloat("InfoTexStrength", strength, true)
-	else
-		local colors = applyOpacity(losColors)
-		spSetLosViewColors(colors.fog, colors.los, colors.radar, colors.jam, colors.radar2)
 	end
 end
 
@@ -91,19 +98,20 @@ function widget:Initialize()
 		updateLOS()
 	end
 	always, LOS, radar, jam, radar2 = Spring.GetLosViewColors()
-	if engineGrades then
-		strengthBeforeWidget = Spring.GetConfigFloat("InfoTexStrength", STRENGTH_DEFAULT)
+	if engineGrades and Spring.GetConfigString(BEFORE_KEY, "") == "" then
+		Spring.SetConfigString(BEFORE_KEY, tostring(Spring.GetConfigFloat("InfoTexStrength", STRENGTH_DEFAULT)), true)
 	end
 
 	updateLOS()
 end
 
 function widget:Shutdown()
+	spSetLosViewColors(always, LOS, radar, jam, radar2)
 	if engineGrades then
 		-- hand back whatever was in effect before this widget, not a forced default
-		Spring.SetConfigFloat("InfoTexStrength", strengthBeforeWidget or STRENGTH_DEFAULT, true)
-	else
-		spSetLosViewColors(always, LOS, radar, jam, radar2)
+		local before = tonumber(Spring.GetConfigString(BEFORE_KEY, ""))
+		Spring.SetConfigFloat("InfoTexStrength", clampStrength(before or STRENGTH_DEFAULT), true)
+		Spring.SetConfigString(BEFORE_KEY, "", true)
 	end
 end
 

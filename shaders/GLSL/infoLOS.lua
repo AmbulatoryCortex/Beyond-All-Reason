@@ -81,10 +81,12 @@ return {
 			//       (no never-seen state; fog is the lowest level)
 			//   G = jammer coverage 0..1, independent of the level
 			//   B = 1, marks the texel as explicit codes
-			// Coverage is thresholded so R only ever holds a real level; the
-			// engine decodes texels before filtering, so edges fade between
-			// the two real levels. Plain texture2D (no jittered getTexel), so
-			// the codes do not flicker from frame to frame.
+			// Coverage is thresholded so R only ever holds a real level. The
+			// engine decodes every texel into "$info:losgrade" (factors), and
+			// only those are filtered and blended over time, so edges fade
+			// between the two real levels instead of popping. $info itself is
+			// rewritten as a legacy-compatible gray for Lua consumers. Plain
+			// texture2D (no jittered getTexel), so the codes do not flicker.
 			float groundlos = texture2D(tex0, texCoord).r;
 			float airlos = texture2D(tex1, texCoord).r;
 			vec2 radarJam = texture2D(tex2, texCoord).rg;
@@ -92,7 +94,7 @@ return {
 			level = max(level, step(0.5, radarJam.r) * (1.0 / 3.0));
 			level = max(level, step(0.5, airlos)     * (2.0 / 3.0));
 			level = max(level, step(0.5, groundlos));
-			// alpha 1 overwrites the previous frame: no temporal blend of codes
+			// alpha 1 overwrites the previous frame: codes are never blended
 			gl_FragColor = vec4(level, clamp(radarJam.g, 0.0, 1.0), 1.0, 1.0);
 		#else
 			// There are 3 levels of intel, from highest to lowest:

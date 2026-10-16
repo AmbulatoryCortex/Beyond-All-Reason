@@ -545,6 +545,7 @@ else -- UNSYCNED
 			lavaDistortion = 3,
 			shadowTex = 4,
 			infoTex = 5,
+			losGradeTex = 6,
 		},
 		uniformFloat = {
 			lavaHeight = 1,
@@ -661,6 +662,7 @@ else -- UNSYCNED
 			end
 
 			lavaShader:Activate()
+			LuaShader.BindLosGrade(lavaShader, 6)
 			lavaShader:SetUniform("lavaHeight", lavatidelevel)
 			lavaShader:SetUniform("heatdistortx", heatdistortx)
 			lavaShader:SetUniform("heatdistortz", heatdistortz)

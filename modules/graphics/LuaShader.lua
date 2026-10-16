@@ -358,6 +358,49 @@ local function InsertWaterBlendDefs(src)
 	return src
 end
 
+-- Shared LOS grade GLSL (shaders/GLSL/include/losgrade.glsl), inserted with //__LOSGRADEDEFS__
+local LOSGRADE_DEFS_PATH = "shaders/GLSL/include/losgrade.glsl"
+local losGradeDefs
+local function GetLosGradeDefs()
+	if not losGradeDefs then
+		losGradeDefs = VFS.LoadFile(LOSGRADE_DEFS_PATH) or ""
+	end
+	return losGradeDefs
+end
+
+local function InsertLosGradeDefs(src)
+	if src:find("//__LOSGRADEDEFS__", 1, true) then
+		-- function replacement: the GLSL must not be read as a gsub pattern
+		return (src:gsub("//__LOSGRADEDEFS__", GetLosGradeDefs))
+	end
+	return src
+end
+
+local engineLosGrade = (Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and true or false
+
+-- enabled (0/1), InfoTexStrength, game seconds for the losGradeParams uniform
+local function GetLosGradeParams()
+	if not engineLosGrade or Spring.GetMapDrawMode() ~= "los" then
+		return 0, 1, 0
+	end
+	return 1, Spring.GetConfigFloat("InfoTexStrength", 1), Spring.GetGameSeconds()
+end
+
+-- call after shader:Activate(); the shader needs uniformInt losGradeTex = unit
+local function BindLosGrade(shader, unit)
+	local enabled, strength, seconds = GetLosGradeParams()
+	if enabled > 0 then
+		gl.Texture(unit, "$info:losgrade")
+	end
+	shader:SetUniform("losGradeParams", enabled, strength, seconds, 0)
+end
+
+local function UnbindLosGrade(unit)
+	if engineLosGrade then
+		gl.Texture(unit, false)
+	end
+end
+
 local function GetQuaternionDefs()
 	-- For replacing //__QUATERNIONDEFS__ with the quaternion definitions
 	return [[
@@ -572,6 +615,12 @@ LuaShader.GetEngineUniformBufferDefs = GetEngineUniformBufferDefs
 LuaShader.GetWaterBlendDefs = GetWaterBlendDefs
 LuaShader.CreateShaderDefinesString = CreateShaderDefinesString
 LuaShader.GetQuaternionDefs = GetQuaternionDefs
+LuaShader.GetLosGradeDefs = GetLosGradeDefs
+LuaShader.InsertLosGradeDefs = InsertLosGradeDefs
+LuaShader.HasLosGrade = function() return engineLosGrade end
+LuaShader.GetLosGradeParams = GetLosGradeParams
+LuaShader.BindLosGrade = BindLosGrade
+LuaShader.UnbindLosGrade = UnbindLosGrade
 
 local function CheckShaderUpdates(shadersourcecache, delaytime)
 	-- todo: extract shaderconfig
@@ -724,6 +773,7 @@ local function CheckShaderUpdates(shadersourcecache, delaytime)
 			if vsSrcNew then
 				vsSrcNew = vsSrcNew:gsub("//__ENGINEUNIFORMBUFFERDEFS__", engineUniformBufferDefs)
 				vsSrcNew = InsertWaterBlendDefs(vsSrcNew)
+				vsSrcNew = InsertLosGradeDefs(vsSrcNew)
 				vsSrcNew = vsSrcNew:gsub("//__DEFINES__", shaderDefines)
 				vsSrcNew = vsSrcNew:gsub("//__QUATERNIONDEFS__", quaternionDefines)
 				shadersourcecache.vsSrcComplete = vsSrcNew
@@ -732,6 +782,7 @@ local function CheckShaderUpdates(shadersourcecache, delaytime)
 			if gsSrcNew then
 				gsSrcNew = gsSrcNew:gsub("//__ENGINEUNIFORMBUFFERDEFS__", engineUniformBufferDefs)
 				gsSrcNew = InsertWaterBlendDefs(gsSrcNew)
+				gsSrcNew = InsertLosGradeDefs(gsSrcNew)
 				gsSrcNew = gsSrcNew:gsub("//__DEFINES__", shaderDefines)
 				gsSrcNew = gsSrcNew:gsub("//__QUATERNIONDEFS__", quaternionDefines)
 				shadersourcecache.gsSrcComplete = gsSrcNew
@@ -743,6 +794,7 @@ local function CheckShaderUpdates(shadersourcecache, delaytime)
 					(printf and (engineUniformBufferDefs .. printf.SSBODefinition) or engineUniformBufferDefs)
 				)
 				fsSrcNew = InsertWaterBlendDefs(fsSrcNew)
+				fsSrcNew = InsertLosGradeDefs(fsSrcNew)
 				fsSrcNew = fsSrcNew:gsub("//__DEFINES__", shaderDefines)
 				fsSrcNew = fsSrcNew:gsub("//__QUATERNIONDEFS__", quaternionDefines)
 				shadersourcecache.fsSrcComplete = fsSrcNew -- the complete subbed cache should be kept as its needed to decipher lines post compilation errors
