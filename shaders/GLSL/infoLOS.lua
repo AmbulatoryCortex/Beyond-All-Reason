@@ -27,6 +27,9 @@ return {
 		uniform sampler2D tex2;
 		uniform sampler2D tex3;
 		varying vec2 texCoord;
+		// Air-only LOS info-texture level. Ground LOS uses losColor (~0.60).
+		// Must stay above the radar ceiling from gfx_los_colors.lua (0.50).
+		const vec4 AIR_ONLY_LOS = vec4(0.52);
 	#ifdef HIGH_QUALITY
 		//! source: http://www.ozone3d.net/blogs/lab/20110427/glsl-random-generator/
 		float rand(const in vec2 n)
@@ -70,12 +73,18 @@ return {
 		}
 
 		void main() {
-			// There are 3 levels of intel, from highest to lowest:
-			// - Line of sight (LOS), direct vision
-			// - Radar
-			// - Fog of war, no vision or radar
-			// We want to color an area using its highest level of intel.
-			// Then, we add a final modifier to show jamming coverage.
+			// Intel levels, brightest first. These are absolute info-texture
+			// levels: the terrain shader does diffuse += infoTex - 0.5.
+			// max() keeps the highest intel, so a dimmer step is invisible
+			// wherever a brighter one is present.
+			//   ground LOS   losColor     ~0.60
+			//   air-only LOS AIR_ONLY_LOS  0.52
+			//   radar        radarColor2  ~0.46
+			//   fog          alwaysColor  ~0.44
+			// Jamming is an additive tint after that, not its own step.
+			// $info:los and $info:airlos are 0/1 (linear-filtered on edges).
+			// Air coverage is usually the larger disc, so the ring outside
+			// ground LOS is air-only.
 
 			// Fog of war
 			// Diagonal lines are drawn by the GL4 widget gfx_fog_diaglines_gl4
@@ -89,13 +98,14 @@ return {
 			float radar = tex2Texel.r;
 			gl_FragColor = max(gl_FragColor, radarColor2 * radar);
 
-			// Line of sight (LOS), the highest level of intel
-			// losColor is the color of ground covered by direct vison (LOS).
-			// Often airlos is greater than groundlos.
+			// Line of sight.
+			// mix(groundlos, airlos, 0.2) made air-only coverage 0.2 * losColor
+			// (~0.12), which max() then hid under radar and fog. Air-only LOS
+			// is its own step, above radar and below full ground LOS.
 			float groundlos = getTexel(tex0, texCoord).r;
 			float airlos = getTexel(tex1, texCoord).r;
-			float losCombined = mix(groundlos, airlos, 0.2);
-			gl_FragColor = max(gl_FragColor, losColor * losCombined);
+			gl_FragColor = max(gl_FragColor, AIR_ONLY_LOS * airlos);
+			gl_FragColor = max(gl_FragColor, losColor * groundlos);
 
 			// Radar jamming
 			// Unlike the other cases, we add the jamming color instead of taking the maximum.
