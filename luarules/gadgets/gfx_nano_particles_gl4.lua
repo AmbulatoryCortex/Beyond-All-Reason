@@ -724,6 +724,7 @@ applyRenderMode(RENDER_MODE)
 local nanoVBO
 local nanoShader
 local lastLosUniform = -1 -- cache to skip redundant SetUniform calls
+local lastLosRawUniform = -1
 
 -- Active particle bookkeeping. The InstanceVBOTable instanceID is our handle.
 local nextID = 1
@@ -1101,13 +1102,14 @@ local function refreshSpeedThrottle()
 end
 
 -- Cached infoTex-is-LOS state. Spring.GetMapDrawMode() returns the active
--- mini-map mode (""/"los"/"height"/"metal"/"path"); when not LOS, $info holds
--- other map data and our LOS smoothstep would discard most of the map.
--- Also refreshed in DrawWorld so mode toggles apply immediately.
+-- mode ("normal"/"los"/"height"/"metal"/"path"; never ""). Outside "los",
+-- $info holds other map data (or a stale clear), so the gate samples the
+-- engine's raw ground-LOS texture "$info:los" instead, which is current in
+-- every mode. Also refreshed in DrawWorld so mode toggles apply immediately.
 local cachedInfoIsLos = true
 local function refreshInfoIsLos()
 	local m = Spring.GetMapDrawMode()
-	cachedInfoIsLos = (m == nil or m == "" or m == "los")
+	cachedInfoIsLos = (m == "los")
 end
 
 --------------------------------------------------------------------------------
@@ -1372,6 +1374,8 @@ local fsSrcCube = [[
 uniform sampler2D infoTex;
 //__LOSGRADEDEFS__
 uniform float losAlwaysVisible;
+uniform float losFromRaw;
+uniform sampler2D losRawTex;
 uniform float cubeShowInside;   // 0 = flat shading, 1 = view-dependent 3D look
 uniform float cubeNoise;        // 0 = no noise, 1 = full ±noise brightness modulation
 uniform float cubeNoiseSpeed;   // animation rate (time scroll)
@@ -1429,11 +1433,12 @@ void main() {
 	float losMul = 1.0;
 	if (losAlwaysVisible < 0.5) {
 		vec2 losUV = clamp(g_worldPos.xz, vec2(0.0), mapSize.xy) / mapSize.zw;
-		vec4 losFactors;
-		if (LosGradeAvailable(losUV, losFactors)) {
-			// engine LOS codes: only ground LOS shows enemy nanos (as before)
-			losMul = LosGradeGroundVisibility(losFactors);
-		} else {
+		if (losFromRaw > 0.5) {
+			// not in "los" mode: raw ground LOS, covers exactly the map
+			float los = texture(losRawTex, clamp(g_worldPos.xz, vec2(0.0), mapSize.xy) / mapSize.xy).r;
+			losMul = smoothstep(0.30, 0.50, los);
+		} else if (!LosGradeGroundVisibility(losUV, losMul)) {
+			// legacy $info gray (older engine or uncoded game)
 			float los = dot(vec3(0.3333), texture(infoTex, losUV).rgb);
 			losMul = smoothstep(0.30, 0.50, los);
 		}
@@ -1541,9 +1546,10 @@ local function initGL4()
 		fsSrc = fsSrcCube,
 		gsSrc = gsSrcCube,
 		shaderName = "NanoParticlesGL4_Shape",
-		uniformInt = { infoTex = 1, losGradeTex = 2, u_shape = U.SHAPE_ID },
+		uniformInt = { infoTex = 1, losGradeTex = 2, losCodeTex = 3, losRawTex = 4, u_shape = U.SHAPE_ID },
 		uniformFloat = {
 			losAlwaysVisible = 0,
+			losFromRaw = 0,
 			drawRadius = U.DRAW_RADIUS,
 			cubeShowInside = U.CUBE_SHOW_INSIDE,
 			cubeNoise = U.CUBE_NOISE,
@@ -1567,7 +1573,7 @@ local function initGL4()
 		vssrcpath = "LuaUI/Shaders/nano_particles_gl4_nogs.vert.glsl",
 		fsSrc = fsSrcCube,
 		shaderName = "NanoParticlesGL4_Shape_NoGS",
-		uniformInt = { infoTex = 1, losGradeTex = 2, u_shape = U.SHAPE_ID },
+		uniformInt = { infoTex = 1, losGradeTex = 2, losCodeTex = 3, losRawTex = 4, u_shape = U.SHAPE_ID },
 		uniformFloat = shaderCacheGS.uniformFloat,
 		shaderConfig = {},
 		forceupdate = true,
@@ -6068,18 +6074,24 @@ function gadget:DrawWorld()
 	-- Shape shader has no nanoTex sampler -- skip the bind entirely.
 	tracy.ZoneBeginN("G:NanoParticles:DrawWorld:ShaderSetup")
 	gl.Texture(1, "$info")
+	gl.Texture(4, "$info:los")
 	nanoShader:Activate()
-	LuaShader.BindLosGrade(nanoShader, 2)
+	LuaShader.BindLosGrade(nanoShader, 2, 3)
 	-- Keep map-draw-mode state fresh per render frame so toggling metal/height/
 	-- path overlays does not spend up to 1s using stale LOS sampling state.
 	refreshInfoIsLos()
 	-- losAlwaysVisible: bypass the LOS/infoTex sample either with full view
 	-- (spectator) or when $info isn't currently rendering LOS (heightmap /
 	-- metalmap / pathmap modes hold other map data).
-	local losU = (cachedSpecFullView or not cachedInfoIsLos) and 1 or 0
+	local losU = cachedSpecFullView and 1 or 0
 	if losU ~= lastLosUniform then
 		nanoShader:SetUniform("losAlwaysVisible", losU)
 		lastLosUniform = losU
+	end
+	local rawU = cachedInfoIsLos and 0 or 1
+	if rawU ~= lastLosRawUniform then
+		nanoShader:SetUniform("losFromRaw", rawU)
+		lastLosRawUniform = rawU
 	end
 	tracy.ZoneEnd()
 
@@ -6116,6 +6128,8 @@ function gadget:DrawWorld()
 	gl.StencilTest(false)
 
 	nanoShader:Deactivate()
+	LuaShader.UnbindLosGrade(2, 3)
+	gl.Texture(4, false)
 	gl.Texture(1, false)
 
 	gl.Blending(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)

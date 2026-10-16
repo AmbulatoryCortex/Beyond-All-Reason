@@ -987,6 +987,7 @@ elseif not BAR.Utilities.Gametype.IsScavengers() then -- UNSYNCED
 			--scumShader:SetUniform("fadeDistance",disticon * 1000)
 			scumVBO.VAO:DrawElements(GL.TRIANGLES, nil, 0, scumVBO.usedElements, 0)
 			scumShader:Deactivate()
+			LuaShader.UnbindLosGrade(7)
 			if usestencil then
 				glStencilMask(1)
 				glStencilFunc(GL_ALWAYS, 1, 1)

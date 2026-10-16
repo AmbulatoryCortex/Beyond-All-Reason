@@ -679,6 +679,7 @@ else -- UNSYCNED
 
 			lavaPlaneVAO:DrawElements(GL.TRIANGLES)
 			lavaShader:Deactivate()
+			LuaShader.UnbindLosGrade(6)
 
 			gl.DepthTest(false)
 			gl.DepthMask(false)

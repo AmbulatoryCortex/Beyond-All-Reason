@@ -1907,6 +1907,7 @@ function widget:DrawWorldPreUnit()
 			spEcho("Drawing", drawnInstances, "grass patches")
 		end
 		grassShader:Deactivate()
+		LuaShader.UnbindLosGrade(6)
 
 		if unitBendSSBO then
 			unitBendSSBO:UnbindBufferRange(6)

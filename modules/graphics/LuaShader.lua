@@ -379,25 +379,42 @@ end
 local engineLosGrade = (Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and true or false
 
 -- enabled (0/1), InfoTexStrength, game seconds for the losGradeParams uniform
+-- cached once per draw frame (draw mode, config and clock do not change
+-- within a frame, and several shaders bind this every frame)
+local losGradeCacheFrame, losGradeCacheEnabled, losGradeCacheStrength, losGradeCacheSeconds = -1, 0, 1, 0
 local function GetLosGradeParams()
-	if not engineLosGrade or Spring.GetMapDrawMode() ~= "los" then
-		return 0, 1, 0
+	local frame = Spring.GetDrawFrame()
+	if frame ~= losGradeCacheFrame then
+		losGradeCacheFrame = frame
+		if engineLosGrade and Spring.GetMapDrawMode() == "los" then
+			losGradeCacheEnabled, losGradeCacheStrength, losGradeCacheSeconds = 1, Spring.GetConfigFloat("InfoTexStrength", 1), Spring.GetGameSeconds()
+		else
+			losGradeCacheEnabled, losGradeCacheStrength, losGradeCacheSeconds = 0, 1, 0
+		end
 	end
-	return 1, Spring.GetConfigFloat("InfoTexStrength", 1), Spring.GetGameSeconds()
+	return losGradeCacheEnabled, losGradeCacheStrength, losGradeCacheSeconds
 end
 
 -- call after shader:Activate(); the shader needs uniformInt losGradeTex = unit
-local function BindLosGrade(shader, unit)
+-- (and losCodeTex = codeUnit when it uses LosGradeGroundVisibility)
+local function BindLosGrade(shader, unit, codeUnit)
 	local enabled, strength, seconds = GetLosGradeParams()
 	if enabled > 0 then
 		gl.Texture(unit, "$info:losgrade")
+		if codeUnit then
+			gl.Texture(codeUnit, "$info:loscodes")
+		end
 	end
 	shader:SetUniform("losGradeParams", enabled, strength, seconds, 0)
 end
 
-local function UnbindLosGrade(unit)
+-- call after drawing; same units as BindLosGrade
+local function UnbindLosGrade(unit, codeUnit)
 	if engineLosGrade then
 		gl.Texture(unit, false)
+		if codeUnit then
+			gl.Texture(codeUnit, false)
+		end
 	end
 end
 

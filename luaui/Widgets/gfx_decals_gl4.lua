@@ -697,11 +697,13 @@ local function DrawDecals()
 				decalShader:SetUniform("fadeDistance", disticon * 1000)
 				decalVBO.VAO:DrawArrays(GL.POINTS, decalVBO.usedElements)
 				decalShader:Deactivate()
+				LuaShader.UnbindLosGrade(10)
 			else
 				decalLargeShader:Activate()
 				LuaShader.BindLosGrade(decalLargeShader, 10)
 				decalVBO.VAO:DrawElements(GL.TRIANGLES, nil, 0, decalVBO.usedElements, 0)
 				decalLargeShader:Deactivate()
+				LuaShader.UnbindLosGrade(10)
 			end
 		end
 
@@ -717,6 +719,7 @@ local function DrawDecals()
 				decalExtraLargeVBO.VAO:DrawElements(GL.TRIANGLES, nil, 0, decalExtraLargeVBO.usedElements, 0)
 			end
 			decalLargeShader:Deactivate()
+			LuaShader.UnbindLosGrade(10)
 		end
 
 		-- Restore the GL state
