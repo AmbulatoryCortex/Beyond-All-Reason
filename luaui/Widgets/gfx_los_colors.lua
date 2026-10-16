@@ -17,81 +17,76 @@ end
 -- v2 Changed colors + remember ; mode + fix keybindings for non english layouts + 2 color presets (/loswithcolors)
 -- v3 Radar shading is always visible, and there is no option to colorize it.
 --    Most players do not know about these settings, they are not in the setting UI, and do not have keybinds in grid.
--- v4 Stopgap so dark maps stay readable. The terrain shader does
---    diffuse += infoTex - 0.5, so levels below 0.5 darken every map by a
---    flat amount. Defaults now sit just under 0.5. The los-opacity slider
---    still moves fog and radar, and cannot push radar up into air LOS.
+-- v4 On engines that register the InfoTexStrength springsetting, shaders/GLSL/infoLOS.lua
+--    writes explicit level codes and the engine grades the map by luminance/saturation
+--    (dark maps are no longer crushed). The old "opacity" slider becomes "strength",
+--    which drives InfoTexStrength (0..1.25, default 1). Colors below are only used on
+--    older engines, where the legacy gray overlay is still drawn.
 
-local DEFAULT_OPACITY = 0.66
-local opacity = DEFAULT_OPACITY
+local STRENGTH_MIN, STRENGTH_MAX, STRENGTH_DEFAULT = 0, 1.25, 1
+local LEGACY_OPACITY = 0.66
 
--- Gray levels passed to Spring.SetLosViewColors at the default slider position.
--- Ground LOS (`los`) is not scaled. Air-only LOS is a separate 0.52 step in
--- shaders/GLSL/infoLOS.lua and has to stay the step above radar.
--- Ordering, brightest first: ground LOS 0.60 > air-only 0.52 > radar > fog.
+local spGetConfigFloat = Spring.GetConfigFloat
+local spSetConfigFloat = Spring.SetConfigFloat
+local spSetLosViewColors = Spring.SetLosViewColors
+
+-- InfoTexStrength is registered (and so has a default) only on engines that decode the codes.
+local engineGrades = (spGetConfigFloat("InfoTexStrength", -1) >= 0)
+
+local strength = STRENGTH_DEFAULT
+
 local losColors = {
-	fog = { 0.44, 0.44, 0.44 },
+	fog = { 0.40, 0.40, 0.40 },
 	los = { 0.60, 0.60, 0.60 },
 	radar = { 0.00, 0.00, 0.00 }, -- not used
 	jam = { 0.03, -0.03, -0.03 }, -- additive tint: R-G/B spread sets how red jammed areas look (was 0.08)
-	radar2 = { 0.46, 0.46, 0.46 },
+	radar2 = { 0.40, 0.40, 0.40 },
 }
 
--- Slider ends (opacity 0 and 1). Radar stays above fog and below the air-only
--- step across the whole slider. The dark end is about as dark as the old default.
-local FOG_DARK, FOG_LIGHT = 0.24, 0.48
-local RADAR_DARK, RADAR_LIGHT = 0.30, 0.50
-
 local always, LOS, radar, jam, radar2
-local spSetLosViewColors = Spring.SetLosViewColors
 
 local function lerp(a, b, t)
 	return a + (b - a) * t
 end
 
-local function clamp01(value)
-	if value < 0 then
-		return 0
-	elseif value > 1 then
-		return 1
-	end
-	return value
+local function clampStrength(value)
+	value = tonumber(value) or STRENGTH_DEFAULT
+	return math.max(STRENGTH_MIN, math.min(STRENGTH_MAX, value))
 end
 
--- opacity == DEFAULT_OPACITY returns `value` unchanged. Below that, fade
--- toward the dark end; above it, fade toward the light end. A straight
--- scale of the old bases would put fog above radar (and above air LOS)
--- at the top of the slider.
-local function remapAroundDefault(value, dark, light)
-	if opacity <= DEFAULT_OPACITY then
-		return lerp(dark, value, opacity / DEFAULT_OPACITY)
-	end
-	return lerp(value, light, (opacity - DEFAULT_OPACITY) / (1 - DEFAULT_OPACITY))
-end
-
+-- legacy path only: map strength (default 1) onto the old opacity (default 0.66)
 local function applyOpacity(colors)
+	local opacity = math.min(1, LEGACY_OPACITY * strength / STRENGTH_DEFAULT)
 	local newColors = table.copy(colors)
-	local fog = remapAroundDefault(colors.fog[1], FOG_DARK, FOG_LIGHT)
-	local radar = remapAroundDefault(colors.radar2[1], RADAR_DARK, RADAR_LIGHT)
-	for i = 1, 3 do
-		newColors.fog[i] = fog
-		newColors.radar2[i] = radar
+	for i, c in pairs(newColors.fog) do
+		newColors.fog[i] = lerp(0, c, opacity)
+	end
+	for i, c in pairs(newColors.radar2) do
+		-- move only half way towards opacity to give contract
+		-- between radar and full fow
+		newColors.radar2[i] = lerp(0, c, lerp(opacity, 1, 0.5))
 	end
 	return newColors
 end
 
 local function updateLOS()
-	local colors = applyOpacity(losColors)
-	spSetLosViewColors(colors.fog, colors.los, colors.radar, colors.jam, colors.radar2)
+	if engineGrades then
+		-- The engine reads InfoTexStrength every frame, so no refresh is needed.
+		-- Not persisted to springsettings: the widget config owns the value.
+		spSetConfigFloat("InfoTexStrength", strength, true)
+	else
+		local colors = applyOpacity(losColors)
+		spSetLosViewColors(colors.fog, colors.los, colors.radar, colors.jam, colors.radar2)
+	end
 end
 
 function widget:Initialize()
 	WG.los = {}
-	WG.los.getOpacity = function()
-		return opacity
+	WG.los.getStrength = function()
+		return strength
 	end
-	WG.los.setOpacity = function(value)
-		opacity = clamp01(value)
+	WG.los.setStrength = function(value)
+		strength = clampStrength(value)
 		updateLOS()
 	end
 	always, LOS, radar, jam, radar2 = Spring.GetLosViewColors()
@@ -100,17 +95,23 @@ function widget:Initialize()
 end
 
 function widget:Shutdown()
-	spSetLosViewColors(always, LOS, radar, jam, radar2)
+	if engineGrades then
+		spSetConfigFloat("InfoTexStrength", STRENGTH_DEFAULT, true)
+	else
+		spSetLosViewColors(always, LOS, radar, jam, radar2)
+	end
 end
 
 function widget:SetConfigData(data)
-	if data.opacity ~= nil then
-		opacity = clamp01(data.opacity)
+	if data.strength ~= nil then
+		strength = clampStrength(data.strength)
 	end
+	-- the old "opacity" (default 0.66) is not carried over: it set fog/radar
+	-- colors, and its scale does not match InfoTexStrength
 end
 
 function widget:GetConfigData()
 	return {
-		opacity = opacity,
+		strength = strength,
 	}
 end

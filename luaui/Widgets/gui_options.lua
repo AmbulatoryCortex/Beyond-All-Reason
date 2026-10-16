@@ -3811,18 +3811,18 @@ function init()
 		},
 
 		{
-			id = "losopacity",
+			id = "losstrength",
 			group = "gfx",
 			category = types.advanced,
 			prefix = BAR.I18N("ui.settings.option.lineofsight"),
-			name = BAR.I18N("ui.settings.option.losopacity"),
+			name = BAR.I18N("ui.settings.option.losstrength"),
 			type = "slider",
-			min = 0.01,
-			max = 1,
-			step = 0.01,
-			value = 0.66,
-			description = "",
-			widgetConfig = { "LOS colors", "opacity", api = "los", get = "getOpacity", set = "setOpacity" },
+			min = 0,
+			max = 1.25,
+			step = 0.05,
+			value = 1,
+			description = BAR.I18N("ui.settings.option.losstrength_descr"),
+			widgetConfig = { "LOS colors", "strength", api = "los", get = "getStrength", set = "setStrength" },
 		},
 
 		{
