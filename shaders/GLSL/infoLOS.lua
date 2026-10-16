@@ -4,9 +4,9 @@ local alwaysColor, losColor, radarColor, jamColor, radarColor2 = Spring.GetLosVi
 return {
 	definitions = {
 		Spring.GetConfigInt("HighResInfoTexture") and "#define HIGH_QUALITY" or "",
-		-- Engines that grade LOS from explicit codes register InfoTexStrength.
-		-- Older engines get the legacy gray overlay.
-		(Spring.GetConfigFloat("InfoTexStrength", -1) >= 0) and "#define LOS_EXPLICIT_CODES" or "",
+		-- Engines that decode explicit LOS codes say so here (old engines have no
+		-- Engine table in this environment and keep the legacy overlay below).
+		(Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and "#define LOS_EXPLICIT_CODES" or "",
 	},
 	vertex = [[#version 130
 		varying vec2 texCoord;
@@ -30,13 +30,6 @@ return {
 		uniform sampler2D tex2;
 		uniform sampler2D tex3;
 		varying vec2 texCoord;
-		const float LOS_CODE_RADAR  = 1.0 / 3.0;
-		const float LOS_CODE_AIR    = 2.0 / 3.0;
-		const float LOS_CODE_GROUND = 1.0;
-		// The combiner blends each update over the previous frame. Codes are
-		// linear, so this only smooths LOS edges over time. High enough that
-		// RGB10 rounding cannot stall short of a level (stall < 0.004).
-		const float LOS_CODE_BLEND  = 0.15;
 	#ifdef HIGH_QUALITY
 		//! source: http://www.ozone3d.net/blogs/lab/20110427/glsl-random-generator/
 		float rand(const in vec2 n)
@@ -80,32 +73,64 @@ return {
 		}
 
 		void main() {
-			// $info:los and $info:airlos are 0/1 coverage (filtered on edges),
-			// $info:radar is r = radar, g = jammer coverage.
-			float groundlos = getTexel(tex0, texCoord).r;
-			float airlos = getTexel(tex1, texCoord).r;
-			vec4 tex2Texel = getTexel(tex2, texCoord);
-			float radar = tex2Texel.r;
-			float jamming = tex2Texel.g;
-
 		#ifdef LOS_EXPLICIT_CODES
-			// Explicit level codes, decoded exactly by the engine (SMFFragProg
-			// LosGradeApply) which grades the map by luminance/saturation:
-			//   R = intel level, max() over the levels present:
+			// Explicit level codes for the engine's LOS grade (SMFFragProg,
+			// LosGradeFetch/LosGradeApply), written exactly with no blending:
+			//   R = intel level, the highest one present:
 			//       0 fog, 1/3 radar, 2/3 air-only LOS, 1 ground LOS
 			//       (no never-seen state; fog is the lowest level)
 			//   G = jammer coverage 0..1, independent of the level
 			//   B = 1, marks the texel as explicit codes
-			// Grading strength is the InfoTexStrength springsetting, not a color.
-			float level = max(max(radar * LOS_CODE_RADAR, airlos * LOS_CODE_AIR), groundlos * LOS_CODE_GROUND);
-			gl_FragColor = vec4(level, jamming, 1.0, LOS_CODE_BLEND);
+			// Coverage is thresholded so R only ever holds a real level; the
+			// engine decodes texels before filtering, so edges fade between
+			// the two real levels. Plain texture2D (no jittered getTexel), so
+			// the codes do not flicker from frame to frame.
+			float groundlos = texture2D(tex0, texCoord).r;
+			float airlos = texture2D(tex1, texCoord).r;
+			vec2 radarJam = texture2D(tex2, texCoord).rg;
+			float level = 0.0;
+			level = max(level, step(0.5, radarJam.r) * (1.0 / 3.0));
+			level = max(level, step(0.5, airlos)     * (2.0 / 3.0));
+			level = max(level, step(0.5, groundlos));
+			// alpha 1 overwrites the previous frame: no temporal blend of codes
+			gl_FragColor = vec4(level, clamp(radarJam.g, 0.0, 1.0), 1.0, 1.0);
 		#else
-			// Legacy: 3 levels of intel blended as gray, plus an additive jam tint.
+			// There are 3 levels of intel, from highest to lowest:
+			// - Line of sight (LOS), direct vision
+			// - Radar
+			// - Fog of war, no vision or radar
+			// We want to color an area using its highest level of intel.
+			// Then, we add a final modifier to show jamming coverage.
+
+			// Fog of war
+			// Diagonal lines are drawn by the GL4 widget gfx_fog_diaglines_gl4
+			// in screen space, which keeps them sharp at all zoom levels.
+			// Here we just paint the flat fog color.
 			gl_FragColor = alwaysColor;
+
+			// Radar
+			// radarColor2 is the color of ground covered by radar.
+			vec4 tex2Texel = getTexel(tex2, texCoord);
+			float radar = tex2Texel.r;
 			gl_FragColor = max(gl_FragColor, radarColor2 * radar);
+
+			// Line of sight (LOS), the highest level of intel
+			// losColor is the color of ground covered by direct vison (LOS).
+			// Often airlos is greater than groundlos.
+			float groundlos = getTexel(tex0, texCoord).r;
+			float airlos = getTexel(tex1, texCoord).r;
 			float losCombined = mix(groundlos, airlos, 0.2);
 			gl_FragColor = max(gl_FragColor, losColor * losCombined);
+
+			// Radar jamming
+			// Unlike the other cases, we add the jamming color instead of taking the maximum.
+			// The jamming color may contain negative value. For instance, if you subtract
+			// blue and green, then this will give a red jamming color while maintaining a similar
+			// lighting intensity.
+			float jamming = tex2Texel.g;
 			gl_FragColor += jamColor * jamming;
+
+			// Finally, make sure nothing has changed our desired alpha value.
 			gl_FragColor.a = 0.03;
 		#endif
 		}
