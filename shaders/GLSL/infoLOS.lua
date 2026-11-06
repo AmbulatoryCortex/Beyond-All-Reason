@@ -3,10 +3,10 @@ local alwaysColor, losColor, radarColor, jamColor, radarColor2 = Spring.GetLosVi
 
 return {
 	definitions = {
-		Spring.GetConfigInt("HighResInfoTexture") and "#define HIGH_QUALITY" or "",
+		Spring.GetConfigInt("HighResInfoTexture") and "#define HIGH_QUALITY\n" or "",
 		-- Engines that decode explicit LOS codes say so here (old engines have no
 		-- Engine table in this environment and keep the legacy overlay below).
-		(Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and "#define LOS_EXPLICIT_CODES" or "",
+		(Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and "#define LOS_EXPLICIT_CODES\n" or "",
 	},
 	vertex = [[#version 130
 		varying vec2 texCoord;
