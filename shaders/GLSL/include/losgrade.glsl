@@ -58,7 +58,7 @@ vec3 LosGradeColor(vec3 col, vec4 factors, vec2 worldXZ) {
 	float lum0 = dot(col, LOSG_LUMA);
 	vec3 graded = mix(vec3(lum0), col, satMul) * (lumMul * jamMul);
 	float lum1 = dot(graded, LOSG_LUMA);
-	graded *= max(lum1, min(LOSG_FLOOR, lum0)) / max(lum1, 1.0e-5);
+	graded *= max(lum1, LOSG_FLOOR) / max(lum1, 1.0e-5);
 	graded.b += factors.z * strength;
 	return graded;
 }
