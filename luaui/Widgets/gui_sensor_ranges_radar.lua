@@ -1,393 +1,381 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
-		name      = "Sensor Ranges Radar",
-		desc      = "Shows ranges of all ally radars. (GL4)",
-		author    = "Kev, Beherith GL4",
-		date      = "2021.06.18",
-		license   = "Lua: GPLv2, GLSL: (c) Beherith (mysterme@gmail.com)",
-		layer     = 0,
-		enabled   = true
+		name = "Sensor Ranges Radar",
+		desc = "Shows Radar ranges of all ally units. (GL4)",
+		author = "Beherith GL4",
+		date = "2021.06.18",
+		license = "GPLv2, (c) Beherith (mysterme@gmail.com)",
+		layer = 19,
+		enabled = true,
 	}
 end
 
+-- Localized Spring API for performance
+local spGetGameFrame = Spring.GetGameFrame
+local spEcho = Spring.Echo
+local spGetViewGeometry = Spring.GetViewGeometry
+
 -------   Configurables: -------------------
-local rangeLineWidth = 3.5 -- (note: will end up larger for larger vertical screen resolution size)
-local minRadarDistance = 500
-
-local gaiaTeamID = Spring.GetGaiaTeamID()
+local debugmode = false
+---
 local rangeColor = { 0.0, 1.0, 0.0, 0.16 } -- default range color
-local usestipple = 1 -- 0 or 1resolution size)
 local opacity = 0.16
+local rangeLineWidth = 4.5 -- (note: will end up larger for larger vertical screen resolution size)
+local lineScale = 1 -- this is a multiplier for the line width, to make it look better on high res screens
 
+local circleSegments = 126 -- To ensure its only 2 warps per instance
+local lineInset = 4 -- elmos inside the coverage edge: about one dash, so the visible (outer) half of the line stays within it
+--------- End configurables ------
 
-local circleSegments = 64
+-- the engine rounds radar ranges down to whole radar cells (ILosType::GetRadius) and its disk ends half a cell past
+-- the last cell center, where gui_sensor_ranges_radar_preview ends the coverage; the line goes just inside
+local radarMipLevel = 2 -- modrules sensors.los.radarMipLevel
+do
+	local modrules = VFS.LoadFile("gamedata/modrules.lua")
+	local mip = modrules and modrules:match("radarMipLevel%s*=%s*(%d+)")
+	if mip then
+		radarMipLevel = tonumber(mip)
+	end
+end
+local radarCell = 8 * 2 ^ radarMipLevel
+
+local minRadarDistance = 500
+local gaiaTeamID = Spring.GetGaiaTeamID()
+
 ------- GL4 NOTES -----
---only update every 15th frame, and interpolate pos in shader!
---Each instance has:
-	-- startposrad
-	-- endposrad
-	-- color
--- TODO: draw ally ranges in diff color!
+-- TODO: 2025.07.02:
 
-local luaShaderDir = "LuaUI/Widgets/Include/"
-local LuaShader = VFS.Include(luaShaderDir.."LuaShader.lua")
-VFS.Include(luaShaderDir.."instancevbotable.lua")
+local LuaShader = gl.LuaShader
+local InstanceVBOTable = gl.InstanceVBOTable
 
-local circleShader = nil
+local popElementInstance = InstanceVBOTable.popElementInstance
+local pushElementInstance = InstanceVBOTable.pushElementInstance
+
+local radarCircleShader = nil
+---@type InstanceVBOTable?
 local circleInstanceVBO = nil
 
+local vsx, vsy = spGetViewGeometry()
 
-local vsSrc = [[
-#version 420
-#line 10000
+-- The fragment shader clips each line where it enters another circle, testing every circle exactly: the shader
+-- storage copy of the instance buffer (its instData is filled on the GPU) is bound here before drawing. The radar
+-- preview uses this binding as well and binds its own buffers before its passes.
+local CIRCLE_SSBO_BINDING = 5
+local circleSSBO = nil ---@type VBO?
+local circleSSBOCapacity = 0
 
-//__DEFINES__
-
-layout (location = 0) in vec4 circlepointposition;
-layout (location = 1) in vec4 startposrad;
-layout (location = 2) in vec4 endposrad;
-layout (location = 3) in vec4 color;
-uniform float circleopacity;
-
-uniform sampler2D heightmapTex;
-
-out DataVS {
-	vec4 worldPos; // pos and radius
-	vec4 blendedcolor;
-	float worldscale_circumference;
-};
-
-//__ENGINEUNIFORMBUFFERDEFS__
-
-#line 11000
-
-float heightAtWorldPos(vec2 w){
-	vec2 uvhm =   vec2(clamp(w.x,8.0,mapSize.x-8.0),clamp(w.y,8.0, mapSize.y-8.0))/ mapSize.xy;
-	return textureLod(heightmapTex, uvhm, 0.0).x;
+local circleShaderSourceCache = {
+	shaderName = "Radar Ranges Circles GL4",
+	vssrcpath = "LuaUI/Shaders/sensor_ranges_los.vert.glsl",
+	fssrcpath = "LuaUI/Shaders/sensor_ranges_los.frag.glsl",
+	shaderConfig = {
+		VSX = vsx,
+		VSY = vsy,
+		PADDING = 1,
+		EXACT_CIRCLES = 1,
+		CIRCLE_SEGMENTS = circleSegments - 1, -- makeCircleVBO repeats its first vertex
+		CIRCLE_SSBO_BINDING = CIRCLE_SSBO_BINDING,
+		--VISIBILITYCULLING = 1,
+		STIPPLE_RATE = 1.0,
+	},
+	uniformInt = {
+		heightmapTex = 0,
+	},
+	uniformFloat = {
+		teamColorMix = 1.0,
+		rangeColor = rangeColor,
+	},
+	silent = not debugmode, -- do not print shader compile timing
 }
-
-void main() {
-	// blend start to end on mod gf%15
-	float timemix = (mod(timeInfo.x,15) + timeInfo.w) * 0.06666;
-	vec4 circleWorldPos = mix(startposrad, endposrad, timemix);
-	circleWorldPos.xz = circlepointposition.xy * circleWorldPos.w +  circleWorldPos.xz;
-
-	// get heightmap
-	circleWorldPos.y = max(0.0,heightAtWorldPos(circleWorldPos.xz))+32.0;
-
-	// -- MAP OUT OF BOUNDS
-	vec2 mymin = min(circleWorldPos.xz,mapSize.xy - circleWorldPos.xz);
-	float inboundsness = min(mymin.x, mymin.y);
-
-	// dump to FS
-	worldscale_circumference = startposrad.w * circlepointposition.z * 5.2345;
-	worldPos = circleWorldPos;
-	blendedcolor = color;
-	blendedcolor.a = 1.0; // opacity override!
-	blendedcolor.a *= 1.0 - clamp(inboundsness*(-0.03),0.0,1.0);
-	gl_Position = cameraViewProj * vec4(circleWorldPos.xyz, 1.0);
-}
-]]
-
-local fsSrc =  [[
-#version 330
-
-#extension GL_ARB_uniform_buffer_object : require
-#extension GL_ARB_shading_language_420pack: require
-
-#line 20000
-
-uniform float circleopacity;
-
-uniform sampler2D heightmapTex;
-
-//__ENGINEUNIFORMBUFFERDEFS__
-
-//__DEFINES__
-in DataVS {
-	vec4 worldPos; // w = range
-	vec4 blendedcolor;
-	float worldscale_circumference;
-};
-
-out vec4 fragColor;
-
-void main() {
-	fragColor.rgba = blendedcolor.rgba;
-	fragColor.a *= circleopacity;
-	#if USE_STIPPLE > 0
-		fragColor.a *= 2.0 * sin(worldscale_circumference + timeInfo.x*0.2) ; // PERFECT STIPPLING!
-	#endif
-}
-]]
-
 
 local function goodbye(reason)
-  Spring.Echo("Sensor Ranges Radar widget exiting with reason: "..reason)
-  widgetHandler:RemoveWidget()
+	spEcho("Sensor Ranges LOS widget exiting with reason: " .. reason)
+	widgetHandler:RemoveWidget()
+	return false
+end
+
+local builtVsx, builtVsy = -1, -1 -- view size the shader (VSX/VSY defines) was made for
+
+local function finalizeShader(shader)
+	if shader then
+		shader:Finalize()
+	end
+end
+
+local function CreateCircleShader()
+	vsx, vsy = spGetViewGeometry()
+	if vsx == builtVsx and vsy == builtVsy then
+		return -- e.g. the handler's first ViewResize after load, at the size Initialize built for
+	end
+	circleShaderSourceCache.shaderConfig.VSX = vsx
+	circleShaderSourceCache.shaderConfig.VSY = vsy
+	circleShaderSourceCache.forceupdate = true
+
+	local oldCircleShader = radarCircleShader
+	radarCircleShader = LuaShader.CheckShaderUpdates(circleShaderSourceCache, 0)
+	if not radarCircleShader then
+		return goodbye("Failed to compile radarrange shader GL4 ")
+	end
+	finalizeShader(oldCircleShader)
+
+	lineScale = (vsy + 500) / 1300
+	builtVsx, builtVsy = vsx, vsy
 end
 
 local function initgl4()
-	local engineUniformBufferDefs = LuaShader.GetEngineUniformBufferDefs()
-	vsSrc = vsSrc:gsub("//__ENGINEUNIFORMBUFFERDEFS__", engineUniformBufferDefs)
-	fsSrc = fsSrc:gsub("//__ENGINEUNIFORMBUFFERDEFS__", engineUniformBufferDefs)
-	circleShader =  LuaShader(
-    {
-      vertex = vsSrc:gsub("//__DEFINES__", "#define MYGRAVITY "..tostring(Game.gravity+0.1)),
-	  fragment = fsSrc:gsub("//__DEFINES__", "#define USE_STIPPLE ".. tostring(usestipple) ),
-      --geometry = gsSrc, no geom shader for now
-      uniformInt = {
-        heightmapTex = 0,
-        },
-      uniformFloat = {
-        circleopacity = {1},
-      },
-    },
-    "radarrange shader GL4"
-  )
-  shaderCompiled = circleShader:Initialize()
-  if not shaderCompiled then goodbye("Failed to compile radarrange shader GL4 ") end
-  local circleVBO,numVertices = makeCircleVBO(circleSegments)
-  local circleInstanceVBOLayout = {
-		  {id = 1, name = 'startposrad', size = 4}, -- the start pos + radius
-		  {id = 2, name = 'endposrad', size = 4}, --  end pos + radius
-		  {id = 3, name = 'color', size = 4}, --- color
-		}
-  circleInstanceVBO = makeInstanceVBOTable(circleInstanceVBOLayout,32, "radarrangeVBO")
-  circleInstanceVBO.numVertices = numVertices
-  circleInstanceVBO.vertexVBO = circleVBO
-  circleInstanceVBO.VAO = makeVAOandAttach(circleInstanceVBO.vertexVBO, circleInstanceVBO.instanceVBO)
+	-- Due to the view size being part of the shader config, we need to initialize the shaders after the view size is known.
+
+	-- Note that we are creating a special Circle VBO, that starts at the center vertex! This is needed for triangle fans
+	local circleVBO, numVertices = InstanceVBOTable.makeCircleVBO(circleSegments, nil, true, "radarrangeCircles")
+	local circleInstanceVBOLayout = {
+		{ id = 1, name = "radius_params", size = 4 }, -- radius, gameframe, 2 unused floats
+		{ id = 2, name = "instData", size = 4, type = GL.UNSIGNED_INT }, -- instData
+	}
+
+	circleInstanceVBO = InstanceVBOTable.makeInstanceVBOTable(circleInstanceVBOLayout, 128, "radarrangeVBO", 2)
+	circleInstanceVBO.numVertices = numVertices
+	circleInstanceVBO.vertexVBO = circleVBO
+	circleInstanceVBO.VAO = InstanceVBOTable.fillVAOSlots(
+		InstanceVBOTable.makeVAOandAttach(circleInstanceVBO.vertexVBO, circleInstanceVBO.instanceVBO),
+		false,
+		true
+	)
+
+	CreateCircleShader()
+end
+
+-- copies the instance buffer into the shader storage buffer the fragment shader reads, and binds it
+local function UpdateCircleSSBO()
+	local instances = circleInstanceVBO
+	if not instances then
+		return false
+	end
+	local ssbo = circleSSBO
+	if not ssbo or circleSSBOCapacity < instances.maxElements then
+		if ssbo then
+			ssbo:Delete()
+		end
+		ssbo = gl.GetVBO(GL.SHADER_STORAGE_BUFFER, false)
+		circleSSBO, circleSSBOCapacity = ssbo, 0
+		if not ssbo then
+			return false
+		end
+		ssbo:Define(instances.maxElements, { { id = 0, name = "circle", size = 2 } }) -- two vec4: radius_params, instData
+		circleSSBOCapacity = instances.maxElements
+	end
+	instances.instanceVBO:CopyTo(ssbo, instances.usedElements * 32)
+	ssbo:BindBufferRange(CIRCLE_SSBO_BINDING)
+	return true
 end
 
 -- Functions shortcuts
-local spGetSpectatingState  = Spring.GetSpectatingState
-local spGetUnitIsActive 	= Spring.GetUnitIsActive
-local spGetUnitDefID        = Spring.GetUnitDefID
-local spGetUnitPosition     = Spring.GetUnitPosition
-local spIsUnitAllied		= Spring.IsUnitAllied
-local glColor               = gl.Color
-local glColorMask           = gl.ColorMask
-local glDepthTest           = gl.DepthTest
-local glLineWidth           = gl.LineWidth
-local glStencilFunc         = gl.StencilFunc
-local glStencilOp           = gl.StencilOp
-local glStencilTest         = gl.StencilTest
-local glStencilMask = gl.StencilMask
-local GL_ALWAYS = GL.ALWAYS
+local spGetSpectatingState = Spring.GetSpectatingState
+local spIsUnitAllied = Spring.IsUnitAllied
+local spGetUnitTeam = Spring.GetUnitTeam
+local spGetUnitIsActive = Spring.GetUnitIsActive
 local GL_NOTEQUAL = GL.NOTEQUAL
 local GL_LINE_LOOP = GL.LINE_LOOP
-local GL_KEEP = 0x1E00 --GL.KEEP
+local GL_KEEP = GL.KEEP
 local GL_REPLACE = GL.REPLACE
-local GL_TRIANGLE_FAN = GL.TRIANGLE_FAN
 
 -- Globals
-local vsx, vsy = Spring.GetViewGeometry()
-local lineScale = 1
-local unitList = {} -- all ally units and their coordinates and radar ranges
-local activeUnits = {}
 local spec, fullview = spGetSpectatingState()
-local allyTeamID = Spring.GetMyAllyTeamID()
-
-local chobbyInterface
+local allyTeamID = Spring.GetLocalAllyTeamID()
 
 -- find all unit types with radar in the game and place ranges into unitRange table
 local unitRange = {} -- table of unit types with their radar ranges
-local isBuilding = {} -- unitDefID keys
-for unitDefID, unitDef in pairs(UnitDefs) do
-	if unitDef.radarDistance and unitDef.radarDistance > minRadarDistance then	-- save perf by excluding low radar range units
-		if not unitRange[unitDefID] then unitRange[unitDefID] = {} end
-		unitRange[unitDefID]['range'] = unitDef.radarDistance
+local unitMid = {} -- unit type -> model mid offset x, z: the radar sits at the unit's midPos
 
-		if unitDef.isBuilding or unitDef.isFactory or unitDef.speed==0 then
-			isBuilding[unitDefID] = true
-		end
+-- fetched once a unit of the type is seen (GetUnitDefDimensions loads the model)
+local function getUnitMid(unitDefID)
+	local mid = unitMid[unitDefID]
+	if not mid then
+		local dims = Spring.GetUnitDefDimensions(unitDefID)
+		mid = { dims and dims.midx or 0, dims and dims.midz or 0 }
+		unitMid[unitDefID] = mid
+	end
+	return mid
+end
+
+local unitList = {} -- all ally units and their coordinates and radar ranges
+
+for unitDefID, unitDef in pairs(UnitDefs) do
+	if unitDef.radarDistance and unitDef.radarDistance > minRadarDistance then -- save perf by excluding low radar range units
+		unitRange[unitDefID] = (math.floor(math.floor(unitDef.radarDistance / 8) / 2 ^ radarMipLevel) + 0.5) * radarCell
+			- lineInset
 	end
 end
 
-function widget:RecvLuaMsg(msg, playerID)
-	if msg:sub(1,18) == 'LobbyOverlayActive' then
-		chobbyInterface = (msg:sub(1,19) == 'LobbyOverlayActive1')
+function widget:ViewResize(newX, newY)
+	CreateCircleShader()
+end
+
+-- a reusable table, since we will literally only modify its first element.
+local instanceCache = { 0, 0, 0, 0, 0, 0, 0, 0 }
+
+local function InitializeUnits()
+	--spEcho("Sensor Ranges LOS InitializeUnits")
+	InstanceVBOTable.clearInstanceTable(circleInstanceVBO)
+	if WG.unittrackerapi and WG.unittrackerapi.visibleUnits then
+		local visibleUnits = WG.unittrackerapi.visibleUnits
+		for unitID, unitDefID in pairs(visibleUnits) do
+			widget:VisibleUnitAdded(unitID, unitDefID, spGetUnitTeam(unitID), nil, true)
+		end
 	end
+	InstanceVBOTable.uploadAllElements(circleInstanceVBO)
 end
 
 function widget:PlayerChanged()
-	local prevFullview = fullview
+	local wasFullview = spec and fullview
 	local myPrevAllyTeamID = allyTeamID
 	spec, fullview = spGetSpectatingState()
-	allyTeamID = Spring.GetMyAllyTeamID()
-	if fullview ~= prevFullview or allyTeamID ~= myPrevAllyTeamID then
-		widget:Initialize()
+	allyTeamID = Spring.GetLocalAllyTeamID()
+	local isFullview = spec and fullview
+	if isFullview ~= wasFullview or ((not isFullview) and allyTeamID ~= myPrevAllyTeamID) then
+		InitializeUnits()
 	end
 end
 
-function widget:ViewResize(newX,newY)
-	vsx, vsy = Spring.GetViewGeometry()
-	lineScale = (vsy + 500) / 1300
-end
-
--- collect data about the unit and store it into unitList
-local function processUnit(unitID, unitDefID, noUpload)
-	if (not (spec and fullview )) and ( not spIsUnitAllied(unitID)) then return end -- display mode for specs
-
-	local unitDefID = spGetUnitDefID(unitID)
-
-    if not unitRange[unitDefID] then
-        return
-    end
-
-	local teamID = Spring.GetUnitTeam(unitID)
-	if teamID == gaiaTeamID then return end -- no gaia units
-
-	local x, y, z = spGetUnitPosition(unitID)
-
-    local range = unitRange[unitDefID]['range']
-    local height = unitRange[unitDefID]['height']
-
-    unitList[unitID] = unitDefID
-	activeUnits[unitID] = false
-	-- shall we jam it straight into the table?
-	pushElementInstance(circleInstanceVBO,{x,y,z,0, x,y,z,0,rangeColor[1],rangeColor[2],rangeColor[3],rangeColor[4] },unitID, true, noUpload)
-
-end
-
-
 function widget:Initialize()
-	if not gl.CreateShader then -- no shader support, so just remove the widget itself, especially for headless
+	if not gl.CreateShader or Spring.GetModOptions().disable_fogofwar then -- no shader support, so just remove the widget itself, especially for headless
 		widgetHandler:RemoveWidget()
 		return
 	end
-	WG.radarrange = {}
-	WG.radarrange.getOpacity = function()
-		return opacity
-	end
 
-	WG.radarrange.setOpacity = function(value)
-		opacity = value
-	end
+	WG.radarrange = {
+		getOpacity = function()
+			return opacity
+		end,
+		setOpacity = function(value)
+			opacity = value
+		end,
+	}
 
 	initgl4()
-	widget:ViewResize()
-	unitList = {}
-    local units = Spring.GetAllUnits()
-	for i=1,#units do
-		processUnit( units[i], spGetUnitDefID(units[i]), true)
-    end
-	uploadAllElements(circleInstanceVBO) --upload initialized at once
+
+	InitializeUnits()
 end
 
 function widget:Shutdown()
+	if circleSSBO then
+		circleSSBO:Delete()
+	end
+	finalizeShader(radarCircleShader)
 	WG.radarrange = nil
 end
 
-function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
-  if 	unitList[unitID] then
-    unitList[unitID] = nil
-	activeUnits[unitID] = nil
-    popElementInstance(circleInstanceVBO,unitID)
-  end
+function widget:VisibleUnitAdded(unitID, unitDefID, unitTeam, reason, noupload)
+	--spEcho("widget:VisibleUnitAdded",unitID, unitDefID, unitTeam, reason, noupload)
+	unitTeam = unitTeam or spGetUnitTeam(unitID)
+	noupload = noupload == true
+	if unitRange[unitDefID] == nil or unitTeam == gaiaTeamID then
+		return
+	end
+
+	if (not (spec and fullview)) and (not spIsUnitAllied(unitID)) then -- given units are still considered allies :/
+		return
+	end -- display mode for specs
+
+	if Spring.GetUnitIsBeingBuilt(unitID) then
+		return
+	end
+
+	instanceCache[1] = unitRange[unitDefID]
+	local mid = getUnitMid(unitDefID)
+	instanceCache[3], instanceCache[4] = mid[1], mid[2]
+
+	local active = spGetUnitIsActive(unitID)
+	local gameFrame = spGetGameFrame()
+	if reason == "UnitFinished" then
+		if active then
+			instanceCache[2] = spGetGameFrame()
+		else
+			instanceCache[2] = -2 -- start from full size
+		end
+	else
+		if active then
+			instanceCache[2] = gameFrame
+		else
+			instanceCache[2] = -1 * gameFrame
+		end
+	end
+	unitList[unitID] = active
+	pushElementInstance(
+		circleInstanceVBO,
+		instanceCache,
+		unitID, --key
+		true, -- updateExisting
+		noupload,
+		unitID -- unitID for uniform buffers
+	)
 end
 
-function widget:UnitTaken(unitID, unitDefID, unitTeam, newTeam)
-	processUnit( unitID, unitDefID )
+function widget:VisibleUnitsChanged(extVisibleUnits, extNumVisibleUnits)
+	-- Note that this unit uses its own VisibleUnitsChanged, to handle the case where we go into fullview.
 end
 
-function widget:UnitGiven(unitID, unitDefID, unitTeam, oldTeam)
-	processUnit( unitID, unitDefID )
+function widget:VisibleUnitRemoved(unitID)
+	if circleInstanceVBO.instanceIDtoIndex[unitID] then
+		popElementInstance(circleInstanceVBO, unitID)
+	end
+	unitList[unitID] = nil
 end
-
-function widget:UnitFinished( unitID,  unitDefID,  unitTeam)
-	processUnit( unitID, unitDefID )
-end
-
-
 
 function widget:GameFrame(n)
-	if spec and fullview then return end
-	if n % 15 == 0 then -- this 15 frames is important, as the vertex shader is interpolating at this rate too!
-		local instanceData = circleInstanceVBO.instanceData -- ok this is so nasty that it makes all my prev pop-push work obsolete
-		for unitID, unitDefID in pairs(unitList) do
-			local instanceDataOffset = (circleInstanceVBO.instanceIDtoIndex[unitID] - 1)* circleInstanceVBO.instanceStep
-			if not isBuilding[unitDefID] then
-				local x, y, z = spGetUnitPosition(unitID)
-
-
-				for i=instanceDataOffset + 1, instanceDataOffset+4 do
-					instanceData[i] = instanceData[i+4]
-				end
-				instanceData[instanceDataOffset+5] = x
-				instanceData[instanceDataOffset+6] = y
-				instanceData[instanceDataOffset+7] = z
-
-			end
-
-
-			local range = unitRange[unitDefID]['range']
+	if spec and fullview then
+		return
+	end
+	if n % 15 == 2 then
+		for unitID, oldActive in pairs(unitList) do
 			local active = spGetUnitIsActive(unitID)
-			if active then
-				instanceData[instanceDataOffset+8] = range
-			else
-				instanceData[instanceDataOffset+8] = 0
+			if active ~= oldActive then
+				unitList[unitID] = active
+				widget:VisibleUnitAdded(unitID, Spring.GetUnitDefID(unitID), spGetUnitTeam(unitID))
 			end
-			if activeUnits[unitID] then
-				instanceData[instanceDataOffset+4] = range
-			else
-				instanceData[instanceDataOffset+4] = 0
-			end
-			activeUnits[unitID] = active
-
-
-			--pushElementInstance(circleInstanceVBO,instanceData,unitID, true, true) -- overwrite data and dont upload!, but i am scum and am directly modifying the table
 		end
-		uploadAllElements(circleInstanceVBO)
 	end
 end
 
 function widget:DrawWorld()
-    if chobbyInterface then return end
-    if spec and fullview then return end
-    if Spring.IsGUIHidden() or (WG['topbar'] and WG['topbar'].showingQuit()) then return end
+	--if spec and fullview then return end
+	if Spring.IsGUIHidden() or (circleInstanceVBO.usedElements == 0) or (opacity <= 0.01) then
+		return
+	end
+	if not UpdateCircleSSBO() then
+		return
+	end
 
-	if circleInstanceVBO.usedElements == 0 then return end
+	--gl.Clear(GL.STENCIL_BUFFER_BIT) -- Preemtively clear the stencil buffer
+	gl.StencilTest(true) -- Enable stencil testing
+	gl.StencilFunc(GL_NOTEQUAL, 4, 4) -- Always Passes, 0 Bit Plane, 0 As Mask
+	gl.StencilOp(GL_KEEP, GL_KEEP, GL_REPLACE) -- Set The Stencil Buffer To 1 Where Draw Any Polygon
+	gl.StencilMask(15) -- Only check the first bit of the stencil buffer
 
-	if opacity < 0.01 then return end
+	radarCircleShader:Activate()
+	gl.Texture(0, "$heightmap") -- Bind the heightmap texture
 
-	glColorMask(false, false, false, false) -- disable color drawing
-	glStencilTest(true)
-	glDepthTest(false)
+	radarCircleShader:SetUniform("rangeColor", rangeColor[1], rangeColor[2], rangeColor[3], opacity)
+	--spEcho("rangeColor", rangeColor[1], rangeColor[2], rangeColor[3], opacity * (useteamcolors and 2 or 1 ))
+	radarCircleShader:SetUniform("teamColorMix", 0)
+	radarCircleShader:SetUniformInt("circleCount", circleInstanceVBO.usedElements)
 
-	gl.Texture(0, "$heightmap")
-	circleShader:Activate()
-	circleShader:SetUniform("circleopacity", useteamcolors and opacity*2 or opacity)
+	gl.LineWidth(rangeLineWidth * lineScale * 1.0)
 
-	-- https://learnopengl.com/Advanced-OpenGL/Stencil-testing
-	-- Borg_King: Draw solid circles into masking stencil buffer
-	glStencilFunc(GL_NOTEQUAL, 1, 1) -- Always Passes, 0 Bit Plane, 0 As Mask
-	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE) -- Set The Stencil Buffer To 1 Where Draw Any Polygon
-	glStencilMask(1)
+	gl.DepthTest(true)
+	-- Note that we are skipping the first and last vertex, as those are the center of the circle :
+	circleInstanceVBO.VAO:DrawArrays(GL_LINE_LOOP, circleInstanceVBO.numVertices - 0, 0, circleInstanceVBO.usedElements)
+	-- TODO: In the future, when BASE VERTEX works, use the following line instead:
+	--circleInstanceVBO.VAO:DrawArrays(GL_LINE_LOOP, circleInstanceVBO.numVertices -2, 1, circleInstanceVBO.usedElements)
 
-	circleInstanceVBO.VAO:DrawArrays(GL_TRIANGLE_FAN, circleInstanceVBO.numVertices, 0, circleInstanceVBO.usedElements, 0)
-
-	-- Borg_King: Draw thick ring with partial width outside of solid circle, replacing stencil to 0 (draw) where test passes
-	glColorMask(true, true, true, true)	-- re-enable color drawing
-	glStencilFunc(GL_NOTEQUAL, 1, 1)
-	glStencilMask(0)
-	glColor(rangeColor[1], rangeColor[2], rangeColor[3], rangeColor[4])
-	glLineWidth(rangeLineWidth * lineScale * 1.0)
-	--Spring.Echo("glLineWidth",rangeLineWidth * lineScale * 1.0)
-	
-	glDepthTest(true)
-	circleInstanceVBO.VAO:DrawArrays(GL_LINE_LOOP, circleInstanceVBO.numVertices, 0, circleInstanceVBO.usedElements, 0)
-
-	glStencilMask(255) -- enable all bits for future drawing
-	glStencilFunc(GL_ALWAYS, 1, 1) -- reset gl stencilfunc too
-
-	circleShader:Deactivate()
+	radarCircleShader:Deactivate()
 	gl.Texture(0, false)
-	glStencilTest(false)
-	glDepthTest(true)
-	glColor(1.0, 1.0, 1.0, 1.0) --reset like a nice boi
-	glLineWidth(1.0)
-	gl.Clear(GL.STENCIL_BUFFER_BIT)
+	gl.DepthTest(true)
+	gl.StencilTest(false) -- Disable stencil testing
+
+	gl.LineWidth(1.0)
+	--gl.Clear(GL.STENCIL_BUFFER_BIT)
 end
 
 function widget:GetConfigData(data)

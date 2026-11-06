@@ -12,16 +12,14 @@
 --------------------------------------------------------------------------------
 
 local unitDefs = {}
-local shared = {} -- shared amongst the lua unitdef enviroments
+local shared = {} -- shared amongst the lua unitdef environments
 
-local preProcFile  = 'gamedata/unitdefs_pre.lua'
-local postProcFile = 'gamedata/unitdefs_post.lua'
+local preProcFile = "gamedata/unitdefs_pre.lua"
+local postProcFile = "gamedata/unitdefs_post.lua"
 
-local DownloadBuilds = VFS.Include('gamedata/download_builds.lua')
+local system = VFS.Include("gamedata/system.lua")
 
-local system = VFS.Include('gamedata/system.lua')
-
-local section = 'unitdefs.lua'
+local section = "unitdefs.lua"
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -30,13 +28,12 @@ local section = 'unitdefs.lua'
 --
 
 if VFS.FileExists(preProcFile) then
-	Shared   = shared    -- make it global
-	UnitDefs = unitDefs  -- make it global
+	Shared = shared -- make it global
+	UnitDefs = unitDefs -- make it global
 	VFS.Include(preProcFile)
 	UnitDefs = nil
-	Shared   = nil
+	Shared = nil
 end
-
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -45,82 +42,62 @@ end
 --  (these will override the SWU versions)
 --
 
-
-local luaFiles = VFS.DirList('units/', '*.lua', nil, true)
+local luaFiles = VFS.DirList("units/", "*.lua", nil, true)
 
 local legionEnabled = Spring.GetModOptions().experimentallegionfaction
-local scavengersEnabled = true
-local raptorsEnabled = true
-if Spring.GetTeamList then
-	scavengersEnabled = false
-	raptorsEnabled = false
-	local teamList = Spring.GetTeamList()
-	for _, teamID in ipairs(teamList) do
-		local luaAI = Spring.GetTeamLuaAI(teamID)
-		if luaAI then
-			if luaAI:find("Raptors") then
-				raptorsEnabled = true
-			elseif luaAI:find("Scavengers") then
-				scavengersEnabled = true
-			end
-		end
-	end
+local scavengersEnabled = BAR.Utilities.Gametype.IsScavengers()
+local raptorsEnabled = BAR.Utilities.Gametype.IsRaptors()
 
-	-- Load all unitdefs when Singleplayer and in DevMode
-	--local playerCount = 0
-	--for _, team in ipairs(teamList) do
-	--	if not select (4, Spring.GetTeamInfo(team, false)) then
-	--		local teamPlayers = Spring.GetPlayerList(team)
-	--		for _, playerID in ipairs(teamPlayers) do
-	--			playerCount = playerCount + 1
-	--		end
-	--	end
-	--end
-	--if playerCount <= 1 and Spring.GetConfigInt("DevMode", 0) == 1 then		-- ERRORS: Spring.GetConfigInt is not available here
-	--	scavengersEnabled = true
-	--	raptorsEnabled = true
-	--	legionEnabled = true
-	--end
-end
 if Spring.GetModOptions().ruins == "enabled" then
 	legionEnabled = true
 	scavengersEnabled = true
-elseif scavengersEnabled then
+end
+
+if scavengersEnabled then
 	legionEnabled = true
 end
 
-if Spring.GetModOptions().experimentalextraunits == true then
+if Spring.GetModOptions().zombies ~= "disabled" then
 	scavengersEnabled = true
+	legionEnabled = true
 end
 
-if Spring.GetModOptions().forceallunits == true then
+if Spring.GetModOptions().experimentalextraunits or Spring.GetModOptions().scavunitsforplayers then
+	scavengersEnabled = true
+	legionEnabled = true
+end
+
+if Spring.GetModOptions().forceallunits then
 	raptorsEnabled = true
 	scavengersEnabled = true
 	legionEnabled = true
 end
 
 for _, filename in ipairs(luaFiles) do
-	if legionEnabled or not filename:find('legion') then
-		if scavengersEnabled or not filename:find('scavengers') then
-			if raptorsEnabled or not filename:find('raptors') then
-				local udEnv = {}
-				udEnv._G = udEnv
-				udEnv.Shared = shared
-				udEnv.GetFilename = function() return filename end
-				setmetatable(udEnv, { __index = system })
-				local success, uds = pcall(VFS.Include, filename, udEnv, vfs_modes)
-				if not success then
-					Spring.Log(section, LOG.ERROR, 'Error parsing ' .. filename .. ': ' .. tostring(uds))
-				elseif type(uds) ~= 'table' then
-					Spring.Log(section, LOG.ERROR, 'Bad return table from: ' .. filename)
+	local loadFile = (legionEnabled or not filename:find("legion"))
+		and (scavengersEnabled or not filename:find("scavengers"))
+		and (raptorsEnabled or not filename:find("raptors"))
+
+	if loadFile then
+		local unitDefsEnv = {}
+		unitDefsEnv._G = unitDefsEnv
+		unitDefsEnv.Shared = shared
+		unitDefsEnv.BAR = BAR
+		unitDefsEnv.GetFilename = function()
+			return filename
+		end
+		setmetatable(unitDefsEnv, { __index = system })
+		local success, defs = pcall(VFS.Include, filename, unitDefsEnv, VFS_MODES)
+		if not success then
+			Spring.Log(section, LOG.ERROR, "Error parsing " .. filename .. ": " .. tostring(defs))
+		elseif type(defs) ~= "table" then
+			Spring.Log(section, LOG.ERROR, "Bad return table from: " .. filename)
+		else
+			for unitDefName, unitDef in pairs(defs) do
+				if (type(unitDefName) == "string") and (type(unitDef) == "table") then
+					unitDefs[unitDefName] = unitDef
 				else
-					for udName, ud in pairs(uds) do
-						if ((type(udName) == 'string') and (type(ud) == 'table')) then
-							unitDefs[udName] = ud
-						else
-							Spring.Log(section, LOG.ERROR, 'Bad return table entry from: ' .. filename)
-						end
-					end
+					Spring.Log(section, LOG.ERROR, "Bad return table entry from: " .. filename)
 				end
 			end
 		end
@@ -130,23 +107,15 @@ end
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 --
---  Insert the download build entries
---
-
-DownloadBuilds.Execute(unitDefs)
-
---------------------------------------------------------------------------------
---------------------------------------------------------------------------------
---
 --  Run a post-processing script if one exists
 --
 
 if VFS.FileExists(postProcFile) then
-	Shared   = shared    -- make it global
-	UnitDefs = unitDefs  -- make it global
+	Shared = shared -- make it global
+	UnitDefs = unitDefs -- make it global
 	VFS.Include(postProcFile)
 	UnitDefs = nil
-	Shared   = nil
+	Shared = nil
 end
 
 --------------------------------------------------------------------------------
@@ -156,37 +125,32 @@ end
 --
 
 for name, def in pairs(unitDefs) do
-	local cob = 'scripts/'   .. name .. '.cob'
-	local obj = def.objectName or def.objectname
-	if obj == nil then
+	local model = def.objectname
+	if model == nil then
 		unitDefs[name] = nil
-		Spring.Log(section, LOG.ERROR, 'removed ' .. name .. ' unitDef, missing objectname param')
-		for k,v in pairs(def) do print('',k,v) end
+		Spring.Log(section, LOG.ERROR, "removed " .. name .. " unitDef, missing objectname param")
 	else
-		local objfile = 'objects3d/' .. obj
-		if not VFS.FileExists(objfile) and not VFS.FileExists(objfile .. '.s3o') then
+		local objfile = "objects3d/" .. model
+		if not VFS.FileExists(objfile) then
 			unitDefs[name] = nil
-			Spring.Log(section, LOG.ERROR, 'removed ' .. name .. ' unitDef, missing model file  (' .. obj .. ')')
+			Spring.Log(section, LOG.ERROR, "removed " .. name .. " unitDef, missing model file  (" .. model .. ")")
 		end
 	end
 end
 
 for name, def in pairs(unitDefs) do
 	local badOptions = {}
-	local buildOptions = def.buildOptions or def.buildoptions
-	if buildOptions then
-		for i, option in ipairs(buildOptions) do
-			if unitDefs[option] == nil then
-				table.insert(badOptions, i)
-				--Spring.Log(section, LOG.ERROR, 'removed the "' .. option ..'" entry' .. ' from the "' .. name .. '" build menu')
-			end
+	local buildOptions = def.buildoptions
+	for i, option in ipairs(buildOptions) do
+		if unitDefs[option] == nil then
+			table.insert(badOptions, i)
 		end
-		if #badOptions > 0 then
-			local removed = 0
-			for _, badIndex in ipairs(badOptions) do
-				table.remove(buildOptions, badIndex - removed)
-				removed = removed + 1
-			end
+	end
+	if #badOptions > 0 then
+		local removed = 0
+		for _, badIndex in ipairs(badOptions) do
+			table.remove(buildOptions, badIndex - removed)
+			removed = removed + 1
 		end
 	end
 end

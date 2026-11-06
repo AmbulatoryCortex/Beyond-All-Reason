@@ -16,12 +16,12 @@ uniform sampler2D lavaNormalHeight;
 uniform sampler2D lavaDistortion;
 uniform sampler2DShadow shadowTex;
 uniform sampler2D infoTex;
+//__LOSGRADEDEFS__
 
 in DataVS {
 	vec4 worldPos;
 	vec4 worldUV;
 	float inboundsness;
-	vec4 randpervertex;
 };
 
 //__ENGINEUNIFORMBUFFERDEFS__
@@ -37,7 +37,7 @@ float heightAtWorldPos(vec2 w){
 	vec2 uvhm = clamp(w, heightmaptexel, mapSize.xy - heightmaptexel);
 	uvhm = uvhm	* inverseMapSize;
 
-	return texture(heightmapTex, uvhm, 0.0).x;
+	return textureLod(heightmapTex, uvhm, 0.0).x; // was texture(.., bias 0.0): the heightmap has no mips
 }
 
 out vec4 fragColor;
@@ -50,16 +50,17 @@ void main() {
 	vec4 camPos = cameraViewInv[3];
 	vec3 worldtocam = camPos.xyz - worldPos.xyz;
 
-	// Sample emissive as heat indicator here for later displacement
-	vec4 nodiffuseEmit =  texture(lavaDiffuseEmit, worldUV.xy * WORLDUVSCALE );
-
-	vec2 rotatearoundvertices = worldUV.zw * SWIRLAMPLITUDE;
-
+	// terrain above the lava plane: decided before any texture work
 	float localheight = OUTOFMAPHEIGHT ;
 	if (inboundsness > 0)
 		localheight = heightAtWorldPos(worldPos.xz);
 
 	if (localheight > lavaHeight - HEIGHTOFFSET ) discard;
+
+	// Sample emissive as heat indicator here for later displacement
+	vec4 nodiffuseEmit =  texture(lavaDiffuseEmit, worldUV.xy * WORLDUVSCALE );
+
+	vec2 rotatearoundvertices = worldUV.zw * SWIRLAMPLITUDE;
 
 	// Calculate how far the fragment is from the coast
 	float coastfactor = clamp((localheight-lavaHeight + COASTWIDTH + HEIGHTOFFSET) * (1.0 / COASTWIDTH),  0.0, 1.0);
@@ -79,8 +80,14 @@ void main() {
 
 	// Sample LOS texture for LOS, and scale it into a sane range
 	vec2 losUV = clamp(worldPos.xz, vec2(0.0), mapSize.xy ) / mapSize.zw;
-	float losTexSample = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
-	losTexSample = clamp(losTexSample * 4.0 - 1.0, LOSDARKNESS, 1.0);
+	float losTexSample;
+	vec4 losFactors;
+	if (LosGradeAvailable(losUV, losFactors)) {
+		losTexSample = LosGradeScalar(losFactors, worldPos.xz); // engine LOS grade (luminance)
+	} else {
+		losTexSample = dot(vec3(0.33), texture(infoTex, losUV).rgb) ; // lostex is PO2
+		losTexSample = clamp(losTexSample * 4.0 - 1.0, LOSDARKNESS, 1.0);
+	}
 	if (inboundsness < 0.0) losTexSample = 1.0;
 
 	// We shift the distortion texture camera-upwards according to the uniforms that got passed in
@@ -93,11 +100,12 @@ void main() {
 	vec2 diffuseNormalUVs =  worldUV.xy * WORLDUVSCALE + distortion.xy + rotatearoundvertices;
 	vec4 normalHeight =  texture(lavaNormalHeight, diffuseNormalUVs);
 
+	vec3 viewDir = normalize(worldtocam);
+
 	// Perform optional parallax mapping
 	#if (PARALLAXDEPTH > 0 )
-		vec3 viewvec = normalize(worldtocam * -1.0);
 		float pdepth = PARALLAXDEPTH * (PARALLAXOFFSET - normalHeight.a ) * (1.0 - coastfactor);
-		diffuseNormalUVs += pdepth * viewvec.xz * 0.002;
+		diffuseNormalUVs -= pdepth * viewDir.xz * 0.002;
 		normalHeight =  texture(lavaNormalHeight, diffuseNormalUVs);
 	#endif
 
@@ -110,13 +118,14 @@ void main() {
 	fragNormal.z = -1 * fragNormal.z; // for some goddamned reason Z(G) is inverted again
 	fragNormal = normalize(fragNormal);
 	float lightamount = clamp(dot(sunDir.xyz, fragNormal), 0.2, 1.0) * max(0.5,shadow);
+	vec3 sunDirN = normalize(sunDir.xyz);
 	fragColor.rgb *= lightamount;
 
 	fragColor.rgb += COASTCOLOR * coastfactor;
 
 	// Specular Color
-	vec3 reflvect = reflect(normalize(-1.0 * sunDir.xyz), normalize(fragNormal));
-	float specular = clamp(pow(dot(normalize(worldtocam), normalize(reflvect)), SPECULAREXPONENT), 0.0, SPECULARSTRENGTH) * shadow;
+	vec3 reflvect = reflect(-sunDirN, fragNormal); // both unit length, so is the reflection
+	float specular = clamp(pow(dot(viewDir, reflvect), SPECULAREXPONENT), 0.0, SPECULARSTRENGTH) * shadow;
 	fragColor.rgb += fragColor.rgb * specular;
 
 	fragColor.rgb += fragColor.rgb * (diffuseEmit.a * distortion.y * 700.0);
@@ -130,7 +139,6 @@ void main() {
 	//fragColor.rgb = distortionTexture.rgb ;
 	//fragColor.rg = worldUV.zw  ;
 	//fragColor.rgba *= vec4(fract(hmap*0.05));
-	//fragColor.rgb = vec3(randpervertex.w * 0.5 + 0.5);
 	//fragColor.rgb = fract(4*vec3(coastfactor));
 	fragColor.a = 1.0;
 	fragColor.a = clamp(  inboundsness * 2.0 +2.0, 0.0, 1.0);

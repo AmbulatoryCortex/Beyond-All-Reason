@@ -1,194 +1,132 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
-		name      = "LOS colors",
-		desc      = "custom colors for LOS",
-		author    = "[teh]decay (thx to Floris, BrainDamage, hokomoko, [teh]Teddy)",
-		date      = "23 jul 2015",
-		license   = "public domain",
-		layer     = 0,
-		version   = 2,
-		enabled   = true
+		name = "LOS colors",
+		desc = "custom colors for LOS",
+		author = "[teh]decay (thx to Floris, BrainDamage, hokomoko, [teh]Teddy, Buttons840)",
+		date = "23 jul 2015",
+		license = "public domain",
+		layer = 0,
+		version = 4,
+		enabled = true,
 	}
 end
 
 --Changelog
 -- v2 Changed colors + remember ; mode + fix keybindings for non english layouts + 2 color presets (/loswithcolors)
+-- v3 Radar shading is always visible, and there is no option to colorize it.
+--    Most players do not know about these settings, they are not in the setting UI, and do not have keybinds in grid.
+-- v4 On engines with Engine.FeatureSupport.losInfoTexCodes, shaders/GLSL/infoLOS.lua writes
+--    explicit level codes and the engine grades the map by luminance/saturation, so dark maps
+--    are no longer crushed. There the LOS slider is "strength" and drives the InfoTexStrength
+--    springsetting (0..1.25, default 1). The v3 colors/opacity still feed the engine's
+--    legacy-compatible $info gray there. Older engines keep the v3 behaviour unchanged.
 
-local losWithRadarEnabled = false
-local colorize = false
-local specDetected = false
-local opacity = 0.88
+local engineGrades = (Engine and Engine.FeatureSupport and Engine.FeatureSupport.losInfoTexCodes) and true or false
 
-local losColorsWithRadarsGray = {
-	fog =    {0.20, 0.20, 0.20},
-	los =    {0.25, 0.25, 0.25},
-	radar =  {0.12, 0.12, 0.12},
-	jam =    {0.10, 0.02, 0.02},
-	radar2 = {0.40, 0.40, 0.40},
+local STRENGTH_MIN, STRENGTH_MAX, STRENGTH_DEFAULT = 0, 1.25, 1
+
+local opacity = 0.66
+local strength = STRENGTH_DEFAULT
+
+-- InfoTexStrength in effect before this widget first touched it, kept as an
+-- in-memory config overlay for the session: it survives widget/LuaUI reloads
+-- and errors that skip Shutdown (so we never save our own value as "before"),
+-- and dies with the engine process (overlays are never written to disk).
+local BEFORE_KEY = "LosColorsInfoTexStrengthBefore"
+
+local losColors = {
+	fog = { 0.40, 0.40, 0.40 },
+	los = { 0.60, 0.60, 0.60 },
+	radar = { 0.00, 0.00, 0.00 }, -- not used
+	jam = { 0.03, -0.03, -0.03 }, -- additive tint: R-G/B spread sets how red jammed areas look (was 0.08)
+	radar2 = { 0.40, 0.40, 0.40 },
 }
-
-local losColorsWithRadarsColor = {
-	fog =    {0.17, 0.17, 0.17},
-	los =    {0.30, 0.30, 0.30},
-	radar2 = {0.08, 0.16, 0.00},
-	jam =    {0.20, 0.00, 0.00},
-	radar =  {0.08, 0.16, 0.00},
-}
-
-local losColorsWithoutRadars = {
-	fog =    {0.30, 0.30, 0.30},
-	los =    {0.20, 0.20, 0.20},
-	radar =  {0.00, 0.00, 0.00},
-	jam =    {0.10, 0.02, 0.02},
-	radar2 = {0.00, 0.00, 0.00},
-}
-
 
 local always, LOS, radar, jam, radar2
 local spSetLosViewColors = Spring.SetLosViewColors
 
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
 
 local function applyOpacity(colors)
 	local newColors = table.copy(colors)
-	for i,c in pairs(newColors.fog) do
-		newColors.fog[i] = c * opacity
-		newColors.los[i] = c / ((1+opacity)/2)
+	for i, c in pairs(newColors.fog) do
+		newColors.fog[i] = lerp(0, c, opacity)
+	end
+	for i, c in pairs(newColors.radar2) do
+		-- move only half way towards opacity to give contract
+		-- between radar and full fow
+		newColors.radar2[i] = lerp(0, c, lerp(opacity, 1, 0.5))
 	end
 	return newColors
 end
 
-local function updateLOS(colors)
-	colors = applyOpacity(colors)
+local function clampStrength(value)
+	value = tonumber(value) or STRENGTH_DEFAULT
+	return math.max(STRENGTH_MIN, math.min(STRENGTH_MAX, value))
+end
+
+local function updateLOS()
+	-- The colors also feed the engine's legacy-compatible $info gray on
+	-- engines that grade from codes, so set them on every engine.
+	local colors = applyOpacity(losColors)
 	spSetLosViewColors(colors.fog, colors.los, colors.radar, colors.jam, colors.radar2)
-end
-
-local function withRadars()
-	if not colorize then
-		updateLOS(losColorsWithRadarsGray)
-	else
-		updateLOS(losColorsWithRadarsColor)
-	end
-end
-
-local function withoutRadars()
-	updateLOS(losColorsWithoutRadars)
-end
-
-local function setLosWithRadars()
-	losWithRadarEnabled = true
-	withRadars()
-end
-
-local function setLosWithoutRadars()
-	losWithRadarEnabled = false
-	withoutRadars()
-end
-
-local function refreshLOS()
-	if losWithRadarEnabled then
-		setLosWithRadars()
-	else
-		setLosWithoutRadars()
-	end
-end
-
-local function setLosWithColors()
-	colorize = true
-	setLosWithRadars()
-end
-
-local function setLosWithoutColors()
-	colorize = false
-	setLosWithRadars()
-end
-
-local function toggleLOSRadars()
-	if losWithRadarEnabled then
-		setLosWithoutRadars()
-	else
-		setLosWithRadars()
-	end
-	return true
-end
-
-local function toggleLOSColors()
-	if not colorize then
-		setLosWithColors()
-	else
-		setLosWithoutColors()
-	end
-	return true
-end
-
-function widget:PlayerChanged(playerID)
-	if playerID == Spring.GetMyPlayerID() then
-		if Spring.GetSpectatingState() then
-			specDetected = true
-			if losWithRadarEnabled then
-				withRadars()
-			else
-				withoutRadars()
-			end
-		end
+	if engineGrades then
+		-- The engine reads InfoTexStrength every frame, so no refresh is needed.
+		-- In-memory overlay only: the widget config owns the value.
+		Spring.SetConfigFloat("InfoTexStrength", strength, true)
 	end
 end
 
 function widget:Initialize()
-	widgetHandler:AddAction("losradar", toggleLOSRadars, nil, 'p')
-	widgetHandler:AddAction("loscolor", toggleLOSColors, nil, 'p')
-
-	WG['los'] = {}
-	WG['los'].getColorize = function()
-		return colorize
-	end
-	WG['los'].setColorize = function(value)
-		colorize = value
-		if not losWithRadarEnabled or not specDetected then
-			refreshLOS()
-		end
-	end
-	WG['los'].getOpacity = function()
+	WG.los = {}
+	WG.los.getOpacity = function()
 		return opacity
 	end
-	WG['los'].setOpacity = function(value)
+	WG.los.setOpacity = function(value)
 		opacity = value
-		if not losWithRadarEnabled or not specDetected then
-			refreshLOS()
-		end
+		updateLOS()
 	end
-
+	WG.los.getStrength = function()
+		return strength
+	end
+	WG.los.setStrength = function(value)
+		strength = clampStrength(value)
+		updateLOS()
+	end
 	always, LOS, radar, jam, radar2 = Spring.GetLosViewColors()
-
-	if losWithRadarEnabled == true then
-		setLosWithRadars()
-	else
-		setLosWithoutRadars()
+	if engineGrades and Spring.GetConfigString(BEFORE_KEY, "") == "" then
+		Spring.SetConfigString(BEFORE_KEY, tostring(Spring.GetConfigFloat("InfoTexStrength", STRENGTH_DEFAULT)), true)
 	end
+
+	updateLOS()
 end
 
 function widget:Shutdown()
 	spSetLosViewColors(always, LOS, radar, jam, radar2)
+	if engineGrades then
+		-- hand back whatever was in effect before this widget, not a forced default
+		local before = tonumber(Spring.GetConfigString(BEFORE_KEY, ""))
+		Spring.SetConfigFloat("InfoTexStrength", clampStrength(before or STRENGTH_DEFAULT), true)
+		Spring.SetConfigString(BEFORE_KEY, "", true)
+	end
 end
 
 function widget:SetConfigData(data)
-	if data.losWithRadarEnabled ~= nil then
-		losWithRadarEnabled = data.losWithRadarEnabled
-	else
-		losWithRadarEnabled = true
-	end
-
-	if data.colorize ~= nil then
-		colorize = data.colorize
-	end
 	if data.opacity ~= nil then
 		opacity = data.opacity
+	end
+	if data.strength ~= nil then
+		strength = clampStrength(data.strength)
 	end
 end
 
 function widget:GetConfigData()
 	return {
-		losWithRadarEnabled = losWithRadarEnabled,
-		colorize = colorize,
-		opacity = opacity
+		opacity = opacity,
+		strength = strength,
 	}
 end

@@ -1,4 +1,7 @@
+// This shader is Copyright (c) 2025 Beherith (mysterme@gmail.com) and licensed under the MIT License
 //shader version is added via gadget
+
+//__ENGINEUNIFORMBUFFERDEFS__
 
 #if (RENDERING_MODE == 2) //shadows pass. AMD requests that extensions are declared right on top of the shader
 	#if (SUPPORT_DEPTH_LAYOUT == 1)
@@ -154,31 +157,42 @@ const ShadowQuality shadowQualityPresets[SHADOW_QUALITY_PRESETS] = ShadowQuality
 /***********************************************************************/
 // Varyings
 in Data {
-	vec4 modelVertexPosOrig; // .w contains model maxY
+	vec4 pieceVertexPosOrig; // .w contains model maxY
 	vec4 worldVertexPos; //.w contains cloakTime
 	// TBN matrix components
-	vec3 worldTangent;
-	vec3 worldBitangent;
-	vec3 worldNormal;
+	vec3 worldTangent_VS; // needs to be normalized due to varying interpolation
+	//vec3 worldBitangent;
+	vec3 worldNormal_VS; // needs to be normalized due to varying interpolation
 
-	vec2 uvCoords;
+	vec4 uvCoords; // .z contains unitID, .w the jammed highlight 0-1
 	flat vec4 teamCol; //.a contains selectedness
 	// main light vector(s)
-	vec3 worldCameraDir;
+//	vec3 worldCameraDir;
 
 	// shadowPosition
-	vec4 shadowVertexPos;
+	vec4 shadowVertexPos; // has construction progress in .w
 
 
 	//vec3 debugvarying; // for passing through debug garbage
-	// auxilary varyings
-	float aoTerm;
-	float fogFactor;
-	flat float selfIllumMod;
-	flat float healthFraction;
-	flat int unitID;
-	flat vec4 userDefined2;
+	// aoterm_fogFactor_selfIllumMod_healthFraction varyings
+	vec4 aoterm_fogFactor_selfIllumMod_healthFraction; // aoterm, fogFactor, selfIllumMod, healthFraction
+//	float aoTerm;
+//	float fogFactor;
+//	flat float selfIllumMod;
+//	flat float healthFraction;
+//	flat int unitID;
+//	flat vec4 userDefined2;
 };
+
+// Jammed units highlight (gui_jammed_units.lua): red like the jammer preview. The shade adapts to the pixel underneath so
+// it stays visible on red team colors: bright red over dark pixels, deep red over bright ones (JAMMED_SHADE_* range)
+#define JAMMED_COLOR vec3(1.0, 0.25, 0.18)
+#define JAMMED_DARK_COLOR vec3(0.45, 0.02, 0.0)
+#define JAMMED_FILL 0.09 // tint strength over the whole unit
+#define JAMMED_RIM 0.25 // extra strength at grazing angles
+#define JAMMED_EDGE 0.33 // extra strength right at the silhouette
+#define JAMMED_SHADE_DARK 0.35 // pixels at most this bright (max rgb) get JAMMED_COLOR
+#define JAMMED_SHADE_BRIGHT 0.7 // pixels at least this bright get JAMMED_DARK_COLOR
 
 
 /***********************************************************************/
@@ -454,7 +468,7 @@ vec3 shToColor(mat3 shR, mat3 shG, mat3 shB, vec3 rayDir) {
 		shUnproject(shG, rayDir),
 		shUnproject(shB, rayDir));
 
-	// A "max" is usually recomended to avoid negative values (can happen with SH)
+	// A "max" is usually recommended to avoid negative values (can happen with SH)
 	rgbColor = max(vec3(0.0), vec3(rgbColor));
 	return rgbColor;
 }
@@ -766,8 +780,13 @@ vec3 NormalBlendUnpackedRNM(vec3 n1, vec3 n2) {
 void main(void){
 	#line 30540
 
-	vec2 myUV = uvCoords;
+	vec2 myUV = uvCoords.xy;
+	float unitID = floor(uvCoords.z + 0.5); // Because it sometimes interpolated to a bit below integer value
 
+	vec3 worldNormal = normalize(worldNormal_VS.xyz);
+	vec3 worldTangent = normalize(worldTangent_VS.xyz);
+	
+	vec3 worldBitangent = normalize(cross(worldNormal, worldTangent));
 	mat3 worldTBN = mat3(worldTangent, worldBitangent, worldNormal);
 
 	// N - worldFragNormal
@@ -778,18 +797,18 @@ void main(void){
 		normalTexVal = texture(normalTex, myUV);
 	}
 
-	float healthMix;
+	float healthMix = 0.0;
 	vec3 seedVec;
 
 	#ifdef ENABLE_OPTION_HEALTH_TEXTURING
 	vec4 myPerlin = vec4(0.0);
 	if (BITMASK_FIELD(bitOptions, OPTION_HEALTH_TEXTURING) || BITMASK_FIELD(bitOptions, OPTION_HEALTH_TEXRAPTORS)) {
-		seedVec = modelVertexPosOrig.xyz * 0.6;
+		seedVec = pieceVertexPosOrig.xyz * 0.6;
 		seedVec.y += 1024.0 * hash11(float(unitID)) + dot(seedVec.xz, vec2(0.1,0.1));
 		myPerlin = textureLod(noisetex3dcube, fract(seedVec.xyz*0.1), 0.0) * 2.0 - 1.0;
 		
 		healthMix = SNORM2NORM(myPerlin.x) * (2.0 - baseVertexDisplacement);
-		healthMix = smoothstep(0.0, healthMix, max((1.0 - healthFraction) + baseVertexDisplacement, 0.0)) * 0.8; // Reduce maximum damage shading to 80%
+		healthMix = smoothstep(0.0, healthMix, max((1.0 - aoterm_fogFactor_selfIllumMod_healthFraction.w) + baseVertexDisplacement, 0.0)) * 0.8; // Reduce maximum damage shading to 80%
 	}
 	#endif
 
@@ -820,12 +839,14 @@ void main(void){
 	vec4 texColor2 = texture(texture2, myUV, textureLODBias);
 
 	#ifdef SHIFT_RGBHSV
+	/*
 		if (BITMASK_FIELD(bitOptions, OPTION_SHIFT_RGBHSV)){
 			vec3 hsvColor1 = rgb2hsv(texColor1.rgb) + userDefined2.rgb;
 			hsvColor1.r = fract(hsvColor1.r);
 			//hsvColor1.gb = clamp(hsvColor1.gb, 0.0, 1.0);
 			texColor1.rgb = hsv2rgb(hsvColor1);
 		}
+	*/
 	#endif
 
 	#ifdef TREE_RANDOMIZATION
@@ -881,7 +902,7 @@ void main(void){
 
 	float emissiveness = texColor2.r;
 
-	emissiveness = clamp(selfIllumMod * emissiveness, 0.0, 1.0);
+	emissiveness = clamp(aoterm_fogFactor_selfIllumMod_healthFraction.z * emissiveness, 0.0, 1.0);
 
 	#ifdef METALNESS
 		float metalness = METALNESS;
@@ -906,6 +927,25 @@ void main(void){
 		metalness = 0.1;
 	}
 
+	#ifdef TREE_RANDOMIZATION
+	// Charring effect for burning felled trees. The tree-feller gadget drives a
+	// felled, burning tree's health fraction down (via Spring.SetFeatureHealth)
+	// while it burns, so healthFraction goes 1 -> ~0. A full-health tree has
+	// charAmount 0 and is completely unaffected. As it chars, the bark darkens
+	// toward near-black charcoal. Charred wood is also forced matte/non-metallic.
+	// Suppress char during pregame (simFrame ~ 0) so map trees that spawn with
+	// pathological health values do not appear burnt before the match starts.
+	{
+		float charAmount = clamp(1.0 - aoterm_fogFactor_selfIllumMod_healthFraction.w, 0.0, 1.0);
+		charAmount *= step(0.5, simFrame);
+		if (charAmount > 0.002) {
+			albedoColor = mix(albedoColor, vec3(0.018, 0.015, 0.013), charAmount);
+			roughness = max(roughness, mix(roughness, 0.9, charAmount));
+			metalness = min(metalness, mix(metalness, 0.0, charAmount));
+		}
+	}
+	#endif
+
 	//roughness = SNORM2NORM( sin(simFrame * 0.25) );
 	//roughness = 0.5;
 
@@ -924,7 +964,7 @@ void main(void){
 	vec3 L = normalize(sunDir.xyz); //from fragment to light, world space
 
 	// V - worldCameraDir
-	vec3 V = normalize(worldCameraDir);
+	vec3 V = normalize(cameraViewInv[3].xyz - worldVertexPos.xyz);
 
 	// H - worldHalfVec
 	vec3 H = normalize(L + V); //half vector
@@ -1067,7 +1107,7 @@ void main(void){
 		#endif
 
 		//vec4 debugColor = vec4(albedoColor.rgb ,1.0);
-		vec3 diffuse = iblDiffuse * albedoColor * aoTerm;
+		vec3 diffuse = iblDiffuse * albedoColor * aoterm_fogFactor_selfIllumMod_healthFraction.x;
 
 		// sample both the pre-filter map and the BRDF lut and combine them together as per the Split-Sum approximation to get the IBL specular part.
 
@@ -1084,7 +1124,7 @@ void main(void){
 		//vec3 specular = reflectionColor * (F * envBRDF.x + (1.0 - F) * envBRDF.y);
 
 		// specular ambient occlusion (see Filament)
-		float aoTermSpec = ComputeSpecularAOFilament(NdotV, aoTerm, roughness2);
+		float aoTermSpec = ComputeSpecularAOFilament(NdotV, aoterm_fogFactor_selfIllumMod_healthFraction.x, roughness2);
 		//vec3 specular = reflectionColor * mix(vec3(envBRDF.y), vec3(envBRDF.x), F);
 		specular = reflectionColor * (F0 * envBRDF.x + F90 * envBRDF.y);
 		specular *= aoTermSpec * energyCompensation;
@@ -1123,13 +1163,13 @@ void main(void){
 	outColor = TONEMAP(outColor);
 
 	if (BITMASK_FIELD(bitOptions, OPTION_MODELSFOG)) {
-		outColor = mix(fogColor.rgb, outColor, fogFactor);
+		outColor = mix(fogColor.rgb, outColor, aoterm_fogFactor_selfIllumMod_healthFraction.y);
 	}
 	#ifdef REFLECT_DISCARD
-		if ((uint(drawPass) & 4u ) == 4u){ // reflections
-			if (worldVertexPos.y < -2.0) discard; // I cant figure out how clipspace works, so this is poor mans clip
-		// AVOID THIS DISCARD LIKE THE PLAGUE, even DYNAMICALLY UNIFORM DISCARDS ARENT FREE!
-		}
+		//if ((uint(drawPass) & 4u ) == 4u){ // reflections
+			//if (worldVertexPos.y < -2.0) discard; // I can't figure out how clipspace works, so this is poor mans clip
+		// AVOID THIS DISCARD LIKE THE PLAGUE, even DYNAMICALLY UNIFORM DISCARDS AREN'T FREE!
+		//}
 	#endif
 
 	outColor.rgb *= brightnessFactor; // this is to correct for lack of env mapping, the nastiest hack there has ever been...
@@ -1140,13 +1180,13 @@ void main(void){
 	#if ENABLE_OPTION_HEALTH_TEXTURING
 		// Under Construction effect
 		// We really need to know the full height of the model here :/
-		float buildProgress = userDefined2.w;
+		float buildProgress = shadowVertexPos.w;
 		if (buildProgress > -0.5){
 			// myPerlin contains 4 channels of noise with decreasing frequency from r to a
 			myPerlin= myPerlin;
 			
 			// Height is the relative height of the fragment in the model compared to the full height
-			float height = clamp(modelVertexPosOrig.w/1.0,0,1);
+			float height = clamp(pieceVertexPosOrig.w/1.0,0,1);
 
 			// Helper sinusoidal patterns:
 			float sintime = 0.5 + 0.5 * sin(simFrame * 0.1); // pulses every 3 seconds
@@ -1158,7 +1198,7 @@ void main(void){
 			// with a power curve, each next faster than the other, meaning .x is the bottom level, .w is the top level
 			vec4 progressLevels = vec4(buildProgress);
 			progressLevels = pow(progressLevels, vec4(3.0, 1.5, 0.7, 0.35));
-			// Add perlin and ensure that perlin doesnt cause inaccuracy at the top of the model:
+			// Add perlin and ensure that perlin doesn't cause inaccuracy at the top of the model:
 			progressLevels = mix(progressLevels, vec4(myPerlin.g + myPerlin.b*sin(simFrame * 0.042342)), 0.05 * smoothstep(0.00, 0.05, 1.0 - buildProgress));
 			
 			vec4 levelLines = clamp(1.0 - 100 * abs(progressLevels - vec4(height)), 0,1);
@@ -1183,7 +1223,7 @@ void main(void){
 			
 			// A dynamic grid which starts at 12 elmos size, then shrinks to 2 elmos size at 100% buildProgress
 			float gridSize = clamp((1.0 - buildProgress) * 10 + 2, 2, 12);
-			vec3 grid = step(0.5, clamp(1.0 - 10* fract((modelVertexPosOrig.xyz) / gridSize), 0.0, 1.0));
+			vec3 grid = step(0.5, clamp(1.0 - 10* fract((pieceVertexPosOrig.xyz) / gridSize), 0.0, 1.0));
 
 
 			
@@ -1278,6 +1318,22 @@ void main(void){
 		}
 	#endif 
 
+	// JAMMED UNITS HIGHLIGHT
+	// uvCoords.w is 0-1 (faded in the vertex shader from unit buffer uniforms 1.w, #7, written by gui_jammed_units.lua)
+	// while the unit stands in allied jammer coverage: a faint red tint over the whole unit and a red rim at grazing angles.
+	float jammedness = uvCoords.w;
+	if (jammedness > 0.001) {
+		float jammedRim = clamp(1.0 - dot(worldNormal, V), 0.0, 1.0);
+		jammedRim *= jammedRim;
+		// bright red over dark pixels, deep red over bright ones: a bright red alone vanishes on red team colors
+		float brightness = max(outColor.r, max(outColor.g, outColor.b));
+		vec3 jammedColor = mix(JAMMED_COLOR, JAMMED_DARK_COLOR, smoothstep(JAMMED_SHADE_DARK, JAMMED_SHADE_BRIGHT, brightness));
+		outColor.rgb = mix(outColor.rgb, jammedColor, jammedness * min(JAMMED_FILL + JAMMED_RIM * jammedRim, 1.0));
+		// thin, stronger edge along the silhouette
+		float jammedEdge = jammedRim * jammedRim * jammedRim;
+		outColor.rgb = mix(outColor.rgb, jammedColor, jammedness * JAMMED_EDGE * jammedEdge);
+	}
+
 	// CLOAK EFFECTS
 	#if ENABLE_OPTION_HEALTH_TEXTURING 
 		float cloakTime = worldVertexPos.w;
@@ -1315,13 +1371,14 @@ void main(void){
 	#if (RENDERING_MODE == 0)
 		// Forward Rendering Mode
 		fragData[0] = vec4(outColor, texColor2.a);
-		//fragData[0] = vec4(vec3(aoTerm/1.3), texColor2.a);
+		//fragData[0] = vec4(vec3(aoterm_fogFactor_selfIllumMod_healthFraction.x/1.3), texColor2.a);
 		//fragData[0] = vec4(vec3(fract((shadowVertexPos.xyz )  ))	, 1.0); //debug
 		//fragData[0] = vec4(vec3(fract(healthMix	))	, 1.0); //debug
 		//fragData[0] = vec4(debugloscolor	, 1.0); //debug
 		//fragData[0] = vec4(cameraView[0].z,cameraView[1].z,cameraView[2].z, 1.0); //debug
 		//fragData[0] = vec4(SNORM2NORM(V), 1.0); //debug
 		//fragData[0] = vec4(NORM2SNORM(worldNormal), 1.0); //debug
+		//fragData[0] = vec4(vec3(worldTBN[2]), 1.0); //debug TBN
 		#ifdef HASALPHASHADOWS
 			if (texColor2.a < 0.5) discard;
 		#endif
@@ -1348,7 +1405,13 @@ void main(void){
 			// This seems to be a silly way of forcing no bloom on trees, as only trees HASALPHASHADOWS
 			fragData[GBUFFER_EMITTEX_IDX] = vec4(vec3(albedoColor * emissiveness * 2.0) + outSpecularColor * 0.3, alphaBin);
 		#endif
-		fragData[GBUFFER_MISCTEX_IDX] = vec4(float(materialIndex) / 255.0, 0.0, 0.0, alphaBin);
+		#ifdef ENABLE_OPTION_HEALTH_TEXTURING
+			// unit pixels for gfx_outline_shader_gl4: green = 1, unitID + 1 in red (low byte) and blue (high byte)
+			uint outlineID = uint(unitID) + 1u;
+			fragData[GBUFFER_MISCTEX_IDX] = vec4(float(outlineID & 255u) / 255.0, 1.0, float(outlineID >> 8u) / 255.0, alphaBin);
+		#else
+			fragData[GBUFFER_MISCTEX_IDX] = vec4(float(materialIndex) / 255.0, 0.0, 0.0, alphaBin);
+		#endif
 	#endif
 }
 #else //shadow pass
@@ -1359,7 +1422,7 @@ void main(void)
 // TODO: if we really wanna have the construction effect here, then it would be prudent to also calc construction shadows here.
 // Note that this is decidedly not free :/ 
 #ifdef HASALPHASHADOWS
-	vec4 texColor2 = texture(texture2, uvCoords, 0); // note that we bind tex2 to pos0 here!
+	vec4 texColor2 = texture(texture2, uvCoords.xy, 0); // note that we bind tex2 to pos0 here!
 	if (texColor2.a < 0.5 ) discard;
 #endif
 }

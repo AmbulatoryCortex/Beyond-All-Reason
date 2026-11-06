@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name = "Weapon Smart Select",
@@ -5,18 +7,20 @@ function gadget:GetInfo()
 		author = "SethDGamre",
 		date = "2024.12.7",
 		license = "GNU GPL, v2 or later",
-		layer = 1, --must layer after unit_set_target_by_type.lua
-		enabled = true
+		layer = 1, --must layer after cmd_area_commands_filter.lua (and unit_alt_set_target_type.lua I assume?)
+		enabled = true,
 	}
 end
 
-if not gadgetHandler:IsSyncedCode() then return end
+if not gadgetHandler:IsSyncedCode() then
+	return
+end
 
 --[[
 Integration Checklist:
 1. Weapon def custom params
 	smart_priority | <boolean> true for the higher priority smart select weapon.
-	smart_backup   | <boolean>= true for the fallback smart select weapon, used when smart_backup cannot shoot a target.
+	smart_backup   | <boolean>= true for the fallback smart select weapon, used when smart_priority cannot shoot a target.
 	smart_trajectory_checker | <boolean> true for the weapon that should be used for trajectory checks for the priorityWeapon. Ideally this is a static point slightly lower than preferred_weapon.
 3. This requires integration into the unit's animation .bos script to work. Follow the instructions in "smart_weapon_select.h" .bos header.
 
@@ -27,10 +31,11 @@ This may be necessary if the turret's turn speed is so slow it triggers false mi
 
 --static
 local frameCheckModulo = Game.gameSpeed -- once per second is sufficient
-local aggroDecayRate = 0.65 --aggro is multiplied by this until it falls within priority aiming state range
-local aggroDecayCap = 10  -- this caps the aggro decay so that misfire state can last a significant amount of time
-local aggroPriorityCap = 8 * aggroDecayCap --The maximum aggro that can be accumulated. This prevents manual targetting from getting stuck in a fire mode for too long.
-local aggroBackupCap = 4 * aggroDecayCap * -1 --Like above, but a negative value because backup is triggered with negative aggro.
+local aggroDecayRate = 0.7 --aggro is multiplied by this until it falls within priority aiming state range
+local aggroDecayCap = 10 -- this caps the aggro decay so that misfire state can last a significant amount of time
+local aggroPriorityCap = 1 --The maximum aggro that can be accumulated. This prevents manual targeting from getting stuck in a fire mode for too long.
+local aggroBackupCap = -16 --Like above, but a negative value because backup is triggered with negative aggro.
+local gameSpeed = Game.gameSpeed
 
 --misfire occurs when the weapon thinks it can shoot a target due to faulty Spring.GetUnitWeaponHaveFreeLineOfFire return values. We must detect when this failure occurs and force high for a long duration.
 local misfireMultiplier = Game.gameSpeed * 1.5
@@ -42,14 +47,20 @@ local backupMisfireAggro = -200 --how much aggro is given multiplied by the misf
 
 local priorityAutoAggro = 12 -- how much aggro is accumulated per frameCheckModulo that the priority weapon successfully aims
 local priorityManualAggro = 24 -- how much aggro is accumulated per frameCheckModulo that the priority weapon successfully aims with a manually assigned target
-local prioritySwitchThreshold = -1 --the aggro at which priority weapon switch is triggered. Aggro is decayed closer to 0 every frameCheckModulo
+local prioritySwitchThreshold = -5 --the aggro at which priority weapon switch is triggered. Aggro is decayed closer to 0 every frameCheckModulo
 
-local backupAutoAggro = 5.5 -- how much aggro is accumulated per frameCheckModulo that the priority weapon fails to aim
+local backupAutoAggro = 8 -- how much aggro is accumulated per frameCheckModulo that the priority weapon fails to aim
 local backupManualAggro = 16 --how much aggro is accumulated per frameCheckModulo that the priority weapon fails to aim with a manually assigned target
-local backupSwitchThreshold = backupAutoAggro * 2.4 * -1 --the aggro at which backup weapon switch is triggered. Aggro is decayed closer to 0 every frameCheckModulo
+local backupSwitchThreshold = backupAutoAggro * 1.2 * -1 --the aggro at which backup weapon switch is triggered. Aggro is decayed closer to 0 every frameCheckModulo
 
-local PRIORITY_AIMINGSTATE = 1
-local BACKUP_AIMINGSTATE = 2
+local priorityCooldownFrames = Game.gameSpeed * 1.5 -- so that no matter how the aggro weights are set, the mode switches will happen no sooner than this.
+local backupCooldownFrames = Game.gameSpeed * 4
+
+local CMD_SMART_TOGGLE = GameCMD.SMART_TOGGLE
+
+local PRIORITY_AIMINGSTATE = 0
+local BACKUP_AIMINGSTATE = 1
+local AUTO_TOGGLESTATE = 2
 local UNIT_TARGET = 1
 local GROUND_TARGET = 2
 
@@ -65,11 +76,78 @@ local spGetUnitEstimatedPath = Spring.GetUnitEstimatedPath
 local spSetUnitTarget = Spring.SetUnitTarget
 local mathMin = math.min
 local mathMax = math.max
+local tableRemove = table.remove
 
 local smartUnits = {}
 local smartUnitDefs = {}
+local modeSwitchFrames = {} -- frame -> unitIDs with a mode switch queued for that frame
+local modeSwitchFramesPool = {} -- emptied queue arrays, reused
+local unitCheckSlots = {} -- frame % frameCheckModulo -> units checked on that frame, spreading the work over the second
+for slot = 0, frameCheckModulo - 1 do
+	unitCheckSlots[slot] = {}
+end
+
+-- Add with other local function declarations
+local spInsertUnitCmdDesc = Spring.InsertUnitCmdDesc
+local spEditUnitCmdDesc = Spring.EditUnitCmdDesc
+local spFindUnitCmdDesc = Spring.FindUnitCmdDesc
+
+local trajectoryCmdDesc = {
+	id = CMD_SMART_TOGGLE,
+	type = CMDTYPE.ICON_MODE,
+	tooltip = "trajectory_tooltip",
+	name = "trajectory_toggle",
+	cursor = "cursornormal",
+	action = "trajectory_toggle",
+	params = { AUTO_TOGGLESTATE, "trajectory_low", "trajectory_high", "trajectory_auto" },
+}
+local cmdDescMap = {
+	default    = table.copy(trajectoryCmdDesc),
+	trajectory = trajectoryCmdDesc,
+}
+
+local function getWeaponMisfireFrames(weaponDef)
+	return mathMax(
+		tonumber(weaponDef.customParams.smart_misfire_frames or 0) or 0,
+		weaponDef.reload * misfireMultiplier,
+		minimumMisfireFrames
+	)
+end
+
+for unitDefID, unitDef in ipairs(UnitDefs) do
+	if unitDef.customParams.weapons_smart_select then
+		local unitDefData = {
+			canMove                    = not unitDef.isImmobile,
+			smartCmdDesc               = cmdDescMap[unitDef.customParams.smart_weapon_cmddesc],
+			priorityWeapon             = 0,
+			backupWeapon               = 0,
+			trajectoryCheckWeapon      = 0,
+			reloadFrames               = 0,
+			failedToFireFrameThreshold = 0,
+		}
+
+		for weaponNumber, weapon in pairs(unitDef.weapons) do
+			local weaponDef = WeaponDefs[weapon.weaponDef]
+			if weaponDef.customParams.smart_priority then
+				unitDefData.priorityWeapon = weaponNumber
+				unitDefData.reloadFrames = math.floor(weaponDef.reload * Game.gameSpeed)
+				unitDefData.failedToFireFrameThreshold = getWeaponMisfireFrames(weaponDef)
+			elseif weaponDef.customParams.smart_backup then
+				unitDefData.backupWeapon = weaponNumber
+			elseif weaponDef.customParams.smart_trajectory_checker then
+				unitDefData.trajectoryCheckWeapon = weaponNumber
+			end
+		end
+
+		-- Smart weapons are prevalidated in alldefs but we keep a final guard to protect against regression.
+		if table.all({ "priorityWeapon", "backupWeapon", "trajectoryCheckWeapon" }, function(key) return unitDefData[key] > 0 end) then
+			smartUnitDefs[unitDefID] = unitDefData
+		end
+	end
+end
 
 function gadget:Initialize()
+	gadgetHandler:RegisterAllowCommand(CMD_SMART_TOGGLE)
 	local units = Spring.GetAllUnits()
 	local spGetUnitDefID = Spring.GetUnitDefID
 	for i = 1, #units do
@@ -77,46 +155,36 @@ function gadget:Initialize()
 	end
 end
 
-for unitDefID, def in ipairs(UnitDefs) do
-	if def.weapons then
-		local weapons = def.weapons
-		for weaponNumber, weaponData in pairs(weapons) do
-			local weaponDefID = weapons[weaponNumber].weaponDef
-			if WeaponDefs[weaponDefID] and WeaponDefs[weaponDefID].customParams then
-				if WeaponDefs[weaponDefID].customParams.smart_priority then
-					smartUnitDefs[unitDefID] = smartUnitDefs[unitDefID] or {}
-					smartUnitDefs[unitDefID].priorityWeapon = weaponNumber
-					smartUnitDefs[unitDefID].failedToFireFrameThreshold = WeaponDefs[weaponDefID].customParams.smart_misfire_frames or mathMax(WeaponDefs[weaponDefID].reload * misfireMultiplier, minimumMisfireFrames)
-					if def.speed and def.speed ~= 0 then
-						smartUnitDefs[unitDefID].canMove = true
-					end
-				end
-				if WeaponDefs[weaponDefID].customParams.smart_backup then
-					smartUnitDefs[unitDefID] = smartUnitDefs[unitDefID] or {}
-					smartUnitDefs[unitDefID].backupWeapon = weaponNumber
-				end
-				if WeaponDefs[weaponDefID].customParams.smart_trajectory_checker then
-					smartUnitDefs[unitDefID] = smartUnitDefs[unitDefID] or {}
-					smartUnitDefs[unitDefID].trajectoryCheckWeapon = weaponNumber
-				end
-			end
-		end
+local function updatePredictedShotFrame(attackerID, unitData, defData)
+	if unitData.predictedShotFrame < gameFrame - defData.failedToFireFrameThreshold then
+		unitData.predictedShotFrame = mathMax(
+			spGetUnitWeaponState(attackerID, defData.priorityWeapon, "reloadFrame"),
+			spGetUnitWeaponState(attackerID, defData.backupWeapon, "reloadFrame")
+		)
 	end
 end
 
---custom functions
 local function failureToFireCheck(attackerID, data, defData)
-	if not data.suspendMisfireUntilFrame or data.aggroBias < prioritySwitchThreshold then return false end
-
-	if data.failedShotFrame < gameFrame - defData.failedToFireFrameThreshold then
-		data.failedShotFrame = mathMax(
-			spGetUnitWeaponState(attackerID, defData.priorityWeapon, 'reloadFrame'),
-			spGetUnitWeaponState(attackerID, defData.backupWeapon, 'reloadFrame')
-		)
+	-- only a stale shot prediction gets refreshed or counts as a misfire
+	if
+		not data.suspendMisfireUntilFrame
+		or data.aggroBias < prioritySwitchThreshold
+		or data.predictedShotFrame >= gameFrame - defData.failedToFireFrameThreshold
+	then
+		return false
 	end
 
-	if data.failedShotFrame < gameFrame - defData.failedToFireFrameThreshold and
-		gameFrame > data.suspendMisfireUntilFrame then
+	-- If it's moving, it might fail to shoot or gain LOS from movement (checked last: the path is a table per waypoint)
+	if defData.canMove and spGetUnitEstimatedPath(attackerID) then
+		return false
+	end
+
+	updatePredictedShotFrame(attackerID, data, defData)
+
+	if
+		data.predictedShotFrame < gameFrame - defData.failedToFireFrameThreshold
+		and gameFrame > data.suspendMisfireUntilFrame
+	then
 		return true
 	else
 		return false
@@ -135,13 +203,59 @@ local function handleMisfire(data, defData)
 	data.suspendMisfireUntilFrame = gameFrame + defData.failedToFireFrameThreshold
 end
 
-local function updateAimingState(attackerID)
-	local data = smartUnits[attackerID]
+--switch the fire mode in the middle of the next reloadtime when available to both make transitions at the ideal time
+--and completely eliminate indecisive wobbling
+local function queueSwitchFrame(attackerID, data, defData, setState)
+	if data.state ~= setState and data.switchCooldownFrame < gameFrame then
+		local idealSubtraction = defData.reloadFrames * 0.75 -- so the switch occurs soon after a shot
+		local idealAddition = defData.reloadFrames - idealSubtraction
+		local maxSubtraction = gameSpeed * 2 -- so that very slow reloading units don't refuse to switch within too large of a time frame
+		local idealFrame
+
+		updatePredictedShotFrame(attackerID, data, defData)
+		data.queuedSwitchFrame = nil -- replaced by this switch
+
+		if data.predictedShotFrame < gameFrame then
+			-- we're so far past the last reloadtime, weapon is either stuck or otherwise can't fire
+			spCallCOBScript(attackerID, data.setStateScriptID, 0, setState)
+		else
+			-- is now just before the ideal frame to switch on?
+			local tooCloseToFiringToSwitchFrame =
+				mathMax(data.predictedShotFrame - idealSubtraction, data.predictedShotFrame - maxSubtraction)
+			if tooCloseToFiringToSwitchFrame <= gameFrame then
+				-- remaining possibility, queue switch for after next predicted shot
+				idealFrame = math.floor(data.predictedShotFrame + idealAddition)
+				local queue = modeSwitchFrames[idealFrame]
+				if not queue then
+					queue = tableRemove(modeSwitchFramesPool) or {}
+					modeSwitchFrames[idealFrame] = queue
+				end
+				queue[#queue + 1] = attackerID
+				data.queuedSwitchFrame = idealFrame
+			else
+				spCallCOBScript(attackerID, data.setStateScriptID, 0, setState)
+			end
+		end
+
+		data.state = setState
+		if data.state == PRIORITY_AIMINGSTATE then
+			data.switchCooldownFrame = gameFrame + priorityCooldownFrames
+		else
+			data.switchCooldownFrame = gameFrame + backupCooldownFrames
+		end
+	end
+end
+
+local function updateAimingState(attackerID, data)
+	if data.toggleState ~= AUTO_TOGGLESTATE then
+		return
+	end
 	local defData = smartUnitDefs[data.unitDefID]
 
 	-- Get target information for the priority and backup weapons
-	local priorityTargetType, priorityIsUserTarget, priorityTarget = spGetUnitWeaponTarget(attackerID, defData.priorityWeapon)
-	local backupIsUserTarget, backupTarget = select(2, spGetUnitWeaponTarget(attackerID, defData.backupWeapon))
+	local priorityTargetType, priorityIsUserTarget, priorityTarget =
+		spGetUnitWeaponTarget(attackerID, defData.priorityWeapon)
+	local _, backupIsUserTarget, backupTarget = spGetUnitWeaponTarget(attackerID, defData.backupWeapon)
 
 	-- Determine if the priority weapon can shoot the target
 	local priorityCanShoot = false
@@ -151,20 +265,37 @@ local function updateAimingState(attackerID)
 	if priorityTargetType == UNIT_TARGET then
 		priorityCanShoot = spGetUnitWeaponHaveFreeLineOfFire(attackerID, defData.trajectoryCheckWeapon, priorityTarget)
 		newMatchTargetNumber = priorityTarget
-		if data.aggroBias >= prioritySwitchThreshold then
-			spSetUnitTarget(attackerID, priorityTarget, false, priorityIsUserTarget, defData.backupWeapon)
-		end
+		spSetUnitTarget(attackerID, priorityTarget, false, priorityIsUserTarget, defData.backupWeapon)
 	elseif priorityTargetType == GROUND_TARGET then
-		priorityCanShoot = spGetUnitWeaponHaveFreeLineOfFire(attackerID, defData.trajectoryCheckWeapon, nil, nil, nil, priorityTarget[1], priorityTarget[2], priorityTarget[3])
+		priorityCanShoot = spGetUnitWeaponHaveFreeLineOfFire(
+			attackerID,
+			defData.trajectoryCheckWeapon,
+			nil,
+			nil,
+			nil,
+			priorityTarget[1],
+			priorityTarget[2],
+			priorityTarget[3]
+		)
 		newMatchTargetNumber = priorityTarget[1]
-		if data.aggroBias >= prioritySwitchThreshold then
-			spSetUnitTarget(attackerID, priorityTarget[1], priorityTarget[2], priorityTarget[3], false, priorityIsUserTarget, defData.backupWeapon)
-		end
+		spSetUnitTarget(
+			attackerID,
+			priorityTarget[1],
+			priorityTarget[2],
+			priorityTarget[3],
+			false,
+			priorityIsUserTarget,
+			defData.backupWeapon
+		)
 	end
 
 	-- prevent misfire from triggering when a target is first acquired from idle state
 	if backupTarget or priorityTarget then
-		if data.suspendMisfireUntilFrame and newMatchTargetNumber ~= 0 and newMatchTargetNumber ~= data.lastTargetMatchNumber then
+		if
+			data.suspendMisfireUntilFrame
+			and newMatchTargetNumber ~= 0
+			and newMatchTargetNumber ~= data.lastTargetMatchNumber
+		then
 			data.lastTargetMatchNumber = newMatchTargetNumber
 			data.suspendMisfireUntilFrame = gameFrame + defData.failedToFireFrameThreshold
 		elseif not data.suspendMisfireUntilFrame then
@@ -175,16 +306,9 @@ local function updateAimingState(attackerID)
 	end
 
 	-- check if priority weapon is stuck trying to aim but failing to fire when it should
-	local failureToFire = false
-	if defData.canMove then
-		if not spGetUnitEstimatedPath(attackerID) then -- If it's moving, it might fail to shoot or gain LOS from movement
-			failureToFire = failureToFireCheck(attackerID, data, defData)
-		end
-	else
-		failureToFire = failureToFireCheck(attackerID, data, defData)
-	end
+	local failureToFire = failureToFireCheck(attackerID, data, defData)
 
-	-- add or subtract aggro based on weapon targetting conditions
+	-- add or subtract aggro based on weapon targeting conditions
 	if priorityIsUserTarget and priorityCanShoot then
 		if failureToFire then
 			handleMisfire(data, defData)
@@ -210,10 +334,10 @@ local function updateAimingState(attackerID)
 	-- Switch aiming state based on aggro bias thresholds
 	if data.aggroBias >= prioritySwitchThreshold then
 		data.aggroBias = mathMax(data.aggroBias * aggroDecayRate, data.aggroBias - aggroDecayCap)
-		spCallCOBScript(attackerID, data.setStateScriptID, 0, PRIORITY_AIMINGSTATE)
+		queueSwitchFrame(attackerID, data, defData, PRIORITY_AIMINGSTATE)
 	elseif data.aggroBias < backupSwitchThreshold then
 		data.aggroBias = mathMin(data.aggroBias * aggroDecayRate, data.aggroBias + aggroDecayCap)
-		spCallCOBScript(attackerID, data.setStateScriptID, 0, BACKUP_AIMINGSTATE)
+		queueSwitchFrame(attackerID, data, defData, BACKUP_AIMINGSTATE)
 	else
 		data.aggroBias = data.aggroBias * aggroDecayRate
 	end
@@ -222,30 +346,80 @@ local function updateAimingState(attackerID)
 	data.misfireTallyMultiplier = data.misfireTallyMultiplier * misfireTallyDecayRate
 end
 
---call-ins
-function gadget:UnitCreated(unitID, unitDefID)
-	if smartUnitDefs[unitDefID] then
-		smartUnits[unitID] = {
-			unitDefID = unitDefID,
-			setStateScriptID = Spring.GetCOBScriptID(unitID, "SetAimingState"),
-			aggroBias = 0,
-			failedShotFrame = 0,
-			misfireTallyMultiplier = 0,
-			lastTargetMatchNumber = 0, --this exists so that a player switching targets frequently doesn't trigger a faulty misfire.
-		}
-		spCallCOBScript(unitID, smartUnits[unitID].setStateScriptID, 0, smartUnitDefs[unitDefID].priorityWeapon)
+local function toggleTrajectory(unitID, state)
+	local cmdDescID = spFindUnitCmdDesc(unitID, CMD_SMART_TOGGLE)
+	if cmdDescID then
+		local unitData = smartUnits[unitID]
+		if not unitData then
+			return
+		end
+		state = (state % 3)
+		trajectoryCmdDesc.params[1] = state
+		spEditUnitCmdDesc(unitID, cmdDescID, { params = trajectoryCmdDesc.params })
+		unitData.toggleState = state
+		unitData.state = state
+		unitData.queuedSwitchFrame = nil
+		if state ~= AUTO_TOGGLESTATE then
+			spCallCOBScript(unitID, smartUnits[unitID].setStateScriptID, 0, state)
+		end
 	end
 end
 
-function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
+function gadget:UnitCreated(unitID, unitDefID)
+	if smartUnitDefs[unitDefID] then
+		local scriptID = Spring.GetCOBScriptID(unitID, "SetAimingState")
+		if scriptID then
+			smartUnits[unitID] = {
+				unitDefID = unitDefID,
+				setStateScriptID = scriptID,
+				aggroBias = 0,
+				predictedShotFrame = 0,
+				misfireTallyMultiplier = 0,
+				lastTargetMatchNumber = 0, --this exists so that a player switching targets frequently doesn't trigger a faulty misfire.
+				switchCooldownFrame = 0,
+				state = PRIORITY_AIMINGSTATE,
+				toggleState = AUTO_TOGGLESTATE,
+			}
+			unitCheckSlots[unitID % frameCheckModulo][unitID] = smartUnits[unitID]
+			spCallCOBScript(unitID, smartUnits[unitID].setStateScriptID, 0, PRIORITY_AIMINGSTATE)
+
+			smartUnitDefs[unitDefID].smartCmdDesc.params[1] = AUTO_TOGGLESTATE
+			spInsertUnitCmdDesc(unitID, smartUnitDefs[unitDefID].smartCmdDesc)
+		end
+	end
+end
+
+function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
 	smartUnits[unitID] = nil
+	unitCheckSlots[unitID % frameCheckModulo][unitID] = nil
 end
 
 function gadget:GameFrame(frame)
-	if frame % frameCheckModulo == 3 then
-		gameFrame = frame
-		for attackerID in pairs(smartUnits) do
-			updateAimingState(attackerID)
-		end
+	gameFrame = frame
+	for attackerID, data in pairs(unitCheckSlots[frame % frameCheckModulo]) do
+		updateAimingState(attackerID, data)
 	end
+	local switchModeQueue = modeSwitchFrames[frame]
+	if switchModeQueue then
+		modeSwitchFrames[frame] = nil
+		for i = 1, #switchModeQueue do
+			local unitID = switchModeQueue[i]
+			local data = smartUnits[unitID]
+			-- skip switches replaced since, or queued for a unit that died (its ID may be reused)
+			if data and data.queuedSwitchFrame == frame then
+				data.queuedSwitchFrame = nil
+				spCallCOBScript(unitID, data.setStateScriptID, 0, data.state)
+			end
+			switchModeQueue[i] = nil
+		end
+		modeSwitchFramesPool[#modeSwitchFramesPool + 1] = switchModeQueue
+	end
+end
+
+function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions)
+	if smartUnitDefs[unitDefID] then
+		toggleTrajectory(unitID, cmdParams[1])
+		return false -- command was used
+	end
+	return true -- command was not used
 end

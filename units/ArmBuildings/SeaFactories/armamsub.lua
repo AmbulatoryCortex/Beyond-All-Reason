@@ -4,6 +4,7 @@ return {
 		buildpic = "ARMAMSUB.DDS",
 		buildtime = 11100,
 		canmove = true,
+		canReclaim = false,
 		collisionvolumeoffsets = "0 16 0",
 		collisionvolumescales = "96 42 96",
 		collisionvolumetype = "CylY",
@@ -14,8 +15,6 @@ return {
 		footprintx = 6,
 		footprintz = 6,
 		health = 2650,
-		idleautoheal = 5,
-		idletime = 1800,
 		maxacc = 0,
 		maxdec = 0,
 		maxslope = 10,
@@ -27,8 +26,8 @@ return {
 		selfdestructas = "largeBuildingExplosionGenericSelfd-uw",
 		sightdistance = 234,
 		terraformspeed = 750,
-		workertime = 150,
-		yardmap = "oooooo oooooo occcco occcco occcco occcco",
+		workertime = 300,
+		yardmap = "oooooo oooooo oeeeeo oeeeeo oeeeeo oeeeeo",
 		buildoptions = {
 			[1] = "armbeaver",
 			[2] = "armpincer",
@@ -47,6 +46,7 @@ return {
 			subfolder = "ArmBuildings/SeaFactories",
 			unitgroup = "builder",
 			usebuildinggrounddecal = true,
+			techlevel = 1.5,
 		},
 		featuredefs = {
 			dead = {
@@ -62,13 +62,6 @@ return {
 				metal = 800,
 				object = "Units/armamsub_dead.s3o",
 				reclaimable = true,
-			},
-		},
-		sfxtypes = {
-			pieceexplosiongenerators = {
-				[1] = "deathceg2",
-				[2] = "deathceg3",
-				[3] = "deathceg4",
 			},
 		},
 		sounds = {

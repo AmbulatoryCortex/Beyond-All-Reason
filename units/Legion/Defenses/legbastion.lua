@@ -1,6 +1,6 @@
 return {
 	legbastion = {
-		maxacc= 0,
+		maxacc = 0,
 		activatewhenbuilt = true,
 		maxdec = 0,
 		buildangle = 4096,
@@ -10,16 +10,15 @@ return {
 		buildtime = 79000,
 		canrepeat = false,
 		collisionvolumeoffsets = "0.0 0.0 0.0",
-		collisionvolumescales = "60 150 60",
-		collisionvolumetype = "box",
+		collisionvolumescales = "68 160 68",
+		collisionvolumetype = "CylY",
+		usepiececollisionvolumes = 1,
 		corpse = "DEAD",
 		damagemodifier = 0.25,
 		energystorage = 1000,
 		explodeas = "largeBuildingexplosiongeneric",
 		footprintx = 5,
 		footprintz = 5,
-		idleautoheal = 2,
-		idletime = 1800,
 		losemitheight = 80,
 		health = 12000,
 		maxslope = 10,
@@ -37,24 +36,25 @@ return {
 		customparams = {
 			maxrange = 1125,
 			usebuildinggrounddecal = true,
-			buildinggrounddecaltype = "decals/corjuno_aoplane.dds",
-			buildinggrounddecalsizey = 5,
-			buildinggrounddecalsizex = 5,
+			buildinggrounddecaltype = "decals/legbastion_aoplane.dds",
+			buildinggrounddecalsizey = 9,
+			buildinggrounddecalsizex = 9,
 			buildinggrounddecaldecayspeed = 30,
-			unitgroup = 'weapon',
-			model_author = "Hornet",
-			normaltex = "unittextures/cor_normal.dds",
+			unitgroup = "weapon",
+			model_author = "Gabs",
+			normaltex = "unittextures/leg_normal.dds",
+			reaimtime = 5,
 			removewait = true,
-			subfolder = "CorBuildings/LandDefenceOffence",
+			subfolder = "Legion/Defenses",
 			techlevel = 2,
 		},
 		featuredefs = {
 			dead = {
 				blocking = true,
 				category = "corpses",
-				collisionvolumeoffsets = "0 0 0",
-				collisionvolumescales = "60 150 60",
-				collisionvolumetype = "Box",
+				collisionvolumeoffsets = "0.0 0.0 0.0",
+				collisionvolumescales = "102 151 97",
+				collisionvolumetype = "CylY",
 				damage = 5400,
 				featuredead = "HEAP",
 				footprintx = 3,
@@ -79,13 +79,6 @@ return {
 				resurrectable = 0,
 			},
 		},
-		sfxtypes = {
-			pieceexplosiongenerators = {
-				[1] = "deathceg2",
-				[2] = "deathceg3",
-				[3] = "deathceg4",
-			},
-		},
 		sounds = {
 			canceldestruct = "cancel2",
 			underattack = "warning1",
@@ -108,7 +101,7 @@ return {
 			},
 		},
 		weapondefs = {
-			pineappleofdoom = {
+			t2heatray = {
 				areaofeffect = 120,
 				avoidfeature = false,
 				avoidfriendly = true,
@@ -125,7 +118,7 @@ return {
 				firetolerance = 300,
 				impulsefactor = 0,
 				laserflaresize = 6,
-				name = "Heavy g2g Cleansing Heat Ray",
+				name = "Heavy Sustained Sweepfire Heat Ray",
 				noselfdamage = true,
 				predictboost = 0.3,
 				proximitypriority = 1,
@@ -136,28 +129,26 @@ return {
 				soundhitdry = "",
 				soundhitwet = "sizzle",
 				soundstart = "heatray3",
-				soundstartvolume = 38,
 				soundtrigger = 1,
-				targetmoveerror = 0.001,
 				thickness = 5.5,
 				turret = true,
 				weapontype = "BeamLaser",
 				weaponvelocity = 1500,
+				customparams = {
+					sweepfire_firetime = 2.5,
+				},
 				damage = {
 					default = 155,
+					vtol = 15,
 				},
-				
-				customparams = {
-					sweepfire=4,--multiplier for displayed dps during the 'bonus' sweepfire stage, needed for DPS calcs
-				}			
 			},
 		},
 		weapons = {
 			[1] = {
 				badtargetcategory = "VTOL GROUNDSCOUT",
-				def = "pineappleofdoom",
+				def = "t2heatray",
 				onlytargetcategory = "SURFACE",
-			}
+			},
 		},
 	},
 }

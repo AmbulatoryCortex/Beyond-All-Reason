@@ -2,12 +2,10 @@ return {
 	coruwmme = {
 		activatewhenbuilt = true,
 		buildangle = 32768,
-		buildingmask = 0,
 		buildpic = "CORUWMME.DDS",
 		buildtime = 14100,
 		canrepeat = false,
 		corpse = "DEAD",
-		damagemodifier = 0.5,
 		energycost = 8100,
 		energyupkeep = 20,
 		explodeas = "mediumBuildingexplosiongeneric-uw",
@@ -15,8 +13,6 @@ return {
 		footprintx = 4,
 		footprintz = 4,
 		health = 3900,
-		idleautoheal = 5,
-		idletime = 1800,
 		maxacc = 0,
 		maxdec = 0,
 		maxslope = 30,
@@ -37,6 +33,7 @@ return {
 			buildinggrounddecaltype = "decals/coruwmme_aoplane.dds",
 			cvbuildable = true,
 			metal_extractor = 4,
+			standardextractor = true,
 			model_author = "Mr Bob",
 			normaltex = "unittextures/cor_normal.dds",
 			removestop = true,
@@ -73,13 +70,6 @@ return {
 				object = "Units/cor5X5C.s3o",
 				reclaimable = true,
 				resurrectable = 0,
-			},
-		},
-		sfxtypes = {
-			pieceexplosiongenerators = {
-				[1] = "deathceg2",
-				[2] = "deathceg3",
-				[3] = "deathceg4",
 			},
 		},
 		sounds = {
